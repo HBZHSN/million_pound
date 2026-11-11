@@ -131,6 +131,8 @@ class LocalTests(LocalSetup):
         second = store.activities(before=first[-1]["id"])
         self.assertEqual((len(first), len(second)), (50, 5))
         self.assertFalse({row["id"] for row in first} & {row["id"] for row in second})
+        self.assertEqual(store.previous_activity(activity_id)["id"], activity_id - 1)
+        self.assertIsNone(store.previous_activity(second[-1]["id"]))
         store.cleanup(images, 7)
         self.assertFalse(path.exists())
         activity = store.get_activity(activity_id)
@@ -268,7 +270,7 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("英镑", calls[1][1]["questions"]["cat"]["instructions"])
             self.assertEqual(calls[2][1]["model"], "swift-1.5")
 
-    async def decide_with_visibility(self, visibility, activities=None):
+    async def decide_with_visibility(self, visibility, activities=None, previous=None):
         calls = []
         def handler(request):
             payload = json.loads(request.content)
@@ -284,8 +286,64 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             path = Path(tmp) / "video.mp4"
             path.write_bytes(b"fixture")
             async with httpx.AsyncClient(trust_env=False, transport=httpx.MockTransport(handler)) as client:
-                result = await Models(client).decide(Settings(), path, path)
+                result = await Models(client).decide(Settings(), path, path, previous)
         return result, calls
+
+    async def test_same_top_activity_continues_regardless_of_score(self):
+        previous = {
+            "dog": {"activity": "sleeping", "visibility": "present", "identity_verified": True},
+            "cat": {"activity": "walking", "visibility": "present", "identity_verified": True},
+        }
+        for score in (.79, .2, .01, 0) * 4:
+            with self.subTest(score=score):
+                result, _ = await self.decide_with_visibility(visibility_response(), {
+                    "dog": {"choice": "sleeping", "probabilities": {"sleeping": score}},
+                    "cat": {"choice": "walking", "probabilities": {"walking": score / 2}},
+                }, previous)
+                self.assertEqual(result["pets"]["dog"]["activity"], "sleeping")
+                self.assertEqual(result["pets"]["cat"]["activity"], "walking")
+                for pet in ("dog", "cat"):
+                    self.assertEqual(result["pets"][pet]["confidence"], score if pet == "dog" else score / 2)
+                    self.assertTrue(result["pets"][pet]["continued"])
+                previous = result["pets"]
+
+    async def test_continuation_requires_same_pet_and_previously_verified_activity(self):
+        for previous in ({}, {"cat": {"activity": "sleeping", "visibility": "present", "identity_verified": True}},
+                         {"dog": {"activity": "sleeping"}},
+                         {"dog": {"activity": "sleeping", "visibility": "absent", "identity_verified": False}},
+                         {"dog": {"activity": "uncertain", "visibility": "present", "identity_verified": True}},
+                         {"dog": {"activity": "walking", "visibility": "present", "identity_verified": True}}):
+            with self.subTest(previous=previous):
+                result, _ = await self.decide_with_visibility(visibility_response(), {
+                    "dog": {"choice": "sleeping", "probabilities": {"sleeping": .1}}}, previous)
+                self.assertEqual(result["pets"]["dog"]["activity"], "uncertain")
+                self.assertFalse(result["pets"]["dog"]["continued"])
+
+    async def test_continuation_stops_when_visibility_or_first_choice_changes(self):
+        previous = {"cat": {"activity": "sleeping", "visibility": "present", "identity_verified": True}}
+        for presence in (("absent", .95), ("uncertain", .95), ("present", .7)):
+            with self.subTest(presence=presence):
+                result, calls = await self.decide_with_visibility(visibility_response(cat=presence), previous=previous)
+                self.assertNotEqual(result["pets"]["cat"]["activity"], "sleeping")
+                self.assertNotIn("cat", calls[1]["questions"])
+        for choice, score in (("uncertain", .9), ("not_visible", .95), ("walking", .2), ("walking", .9)):
+            with self.subTest(choice=choice, score=score):
+                result, _ = await self.decide_with_visibility(visibility_response(), {
+                    "cat": {"choice": choice, "probabilities": {choice: score}}}, previous)
+                self.assertEqual(result["pets"]["cat"]["activity"], "walking" if choice == "walking" and score == .9 else "uncertain")
+                self.assertFalse(result["pets"]["cat"]["continued"])
+
+    async def test_choice_must_have_the_highest_valid_score(self):
+        previous = {"dog": {"activity": "sleeping", "visibility": "present", "identity_verified": True}}
+        for probabilities in ({"sleeping": .2, "resting": .8}, {"sleeping": .2, "resting": True},
+                              {"sleeping": .2, "resting": float("nan")}, {"sleeping": .2, "invalid": .1}):
+            with self.subTest(probabilities=probabilities), self.assertRaises(ModelError):
+                await self.decide_with_visibility(visibility_response(), {
+                    "dog": {"choice": "sleeping", "probabilities": probabilities}}, previous)
+        result, _ = await self.decide_with_visibility(visibility_response(), {
+            "dog": {"choice": "sleeping", "probabilities": {"sleeping": .2, "resting": .2}}}, previous)
+        self.assertEqual(result["pets"]["dog"]["activity"], "sleeping")
+        self.assertTrue(result["pets"]["dog"]["continued"])
 
     async def test_absent_cat_never_inherits_dogs_sleep(self):
         result, calls = await self.decide_with_visibility(visibility_response(cat=("absent", .95)))
@@ -401,8 +459,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         self.tmp.cleanup()
 
-    async def analyze(self, cfg=None):
-        started = datetime.now(timezone.utc)
+    async def analyze(self, cfg=None, started=None):
+        started = started or datetime.now(timezone.utc)
         activity_id = self.store.add_activity(started.isoformat(), (started + timedelta(seconds=10)).isoformat())
         name = f"{activity_id:032x}-1.jpg"
         (self.monitor.images / name).write_bytes(b"evidence")
@@ -411,6 +469,20 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         raw.write_bytes(b"original")
         await self.monitor.analyze(cfg or self.config.current, raw, activity_id, started, 10)
         return activity_id
+
+    async def test_continuation_uses_only_adjacent_completed_record_from_store(self):
+        self.monitor.models.decide.return_value["scores"] = {"eating": .1, "destruction": .1, "toileting": .1}
+        base = datetime.now(timezone.utc) - timedelta(hours=1)
+        for i, (status, gap) in enumerate((("done", 0), ("done", 1), ("done", 2), ("done", -1),
+                                            ("error", 0), ("skipped", 0), ("cancelled", 0), ("pending", 0))):
+            with self.subTest(status=status, gap=gap):
+                start = base + timedelta(seconds=i * 100)
+                prior_id = self.store.add_activity(start.isoformat(), (start + timedelta(seconds=10)).isoformat())
+                pets = {"dog": {"activity": "sleeping", "visibility": "present", "identity_verified": True}}
+                self.store.update_activity(prior_id, status, pets=pets)
+                await self.analyze(started=start + timedelta(seconds=10 + gap))
+                expected = pets if status == "done" and 0 <= gap <= 1 else {}
+                self.assertEqual(self.monitor.models.decide.call_args.args[3], expected)
 
     async def test_record_mode_notification_and_review_interval(self):
         await self.analyze()

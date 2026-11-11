@@ -83,6 +83,10 @@ class Store:
     def get_activity(self, activity_id):
         return self.decode(self.db.execute("SELECT * FROM activities WHERE id=?", (activity_id,)).fetchone())
 
+    def previous_activity(self, activity_id):
+        return self.decode(self.db.execute("SELECT * FROM activities WHERE id < ? ORDER BY id DESC LIMIT 1",
+                                           (activity_id,)).fetchone())
+
     def activities(self, before=None, start=None, end=None):
         query, values = "SELECT * FROM activities WHERE id < ?", [before or 2**63 - 1]
         if start is not None:

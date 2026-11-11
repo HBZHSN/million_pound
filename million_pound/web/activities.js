@@ -113,6 +113,7 @@ function showPhoto() {
     if (decision.identity_verified && decision.activity === "uncertain" && decision.proposed_activity && decision.proposed_activity !== "uncertain") {
       observation += "（原始倾向：" + labelFor(decision.proposed_activity) + "，未达确认条件）";
     }
+    if (decision.continued) observation += "（本段第一名仍相同，延续前段活动）";
     if (!decision.visibility || decision.identity_verified || decision.activity === "not_visible") observation += " · 模型分数 " + Math.round(decision.confidence * 100) + "%";
   }
   $("#detail-confidence").textContent = observation;

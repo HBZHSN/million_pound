@@ -53,9 +53,12 @@ def choice_answer(result, key, criteria):
     try:
         answer = result["answers"][key]
         choice = answer["choice"]
-        confidence = answer["probabilities"][choice]
-        if choice not in criteria or isinstance(confidence, bool) or not isinstance(confidence, (int, float)) \
-                or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+        probabilities = answer["probabilities"]
+        confidence = probabilities[choice]
+        if choice not in criteria or any(
+                candidate not in criteria or isinstance(score, bool) or not isinstance(score, (int, float))
+                or not math.isfinite(score) or not 0 <= score <= 1 for candidate, score in probabilities.items()
+        ) or confidence != max(probabilities.values()):
             raise ValueError
         return choice, confidence
     except (KeyError, TypeError, ValueError):
@@ -77,7 +80,7 @@ class Models:
     def __init__(self, client: httpx.AsyncClient):
         self.client = client
 
-    async def decide(self, settings: Settings, video: Path, snapshot: Path):
+    async def decide(self, settings: Settings, video: Path, snapshot: Path, previous: dict | None = None):
         state = (PET_APPEARANCE + f"这是 {settings.speed} 倍速录像，从原视频每秒抽取 {settings.sample_fps} 帧。"
                  "视频和原始截图都来自本次录像，截图取自中间时刻；判断入镜应看整段视频，不能只看中间这一帧。"
                  "每段独立判断，不沿用上一段的出现状态或行为。")
@@ -148,8 +151,11 @@ class Models:
         for pet in visible:
             activity, confidence = choice_answer(result, pet, criteria)
             threshold = 0.8 if activity == "sleeping" else 0.6
-            pets[pet].update(activity=activity if confidence >= threshold else "uncertain", confidence=confidence,
-                             proposed_activity=activity)
+            prior = (previous or {}).get(pet, {})
+            same = (activity not in ("uncertain", "not_visible") and prior.get("activity") == activity
+                    and prior.get("identity_verified") and prior.get("visibility") == "present")
+            pets[pet].update(activity=activity if same or confidence >= threshold else "uncertain", confidence=confidence,
+                             proposed_activity=activity, continued=bool(same and confidence < threshold))
             if activity == "not_visible":
                 pets[pet].update(activity="uncertain", identity_verified=False)
         return {"scores": scores, "pets": pets}

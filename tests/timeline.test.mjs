@@ -33,6 +33,16 @@ test("旧吃饭和喝水记录合并为吃喝，保留原始记录", () => {
   assert.equal(first.pets.dog.activity, "drinking");
 });
 
+test("后端延续的低分活动保持合并，切换活动时正常分段并保留原始分数", () => {
+  const first = sample(1, 0), continued = sample(2, 10), changed = sample(3, 20, "walking");
+  continued.pets.dog = {...continued.pets.dog, confidence: .01, proposed_activity: "sleeping", continued: true};
+  const dog = groupActivities([changed, first, continued]).filter(item => item.pet === "dog");
+  assert.deepEqual(dog.map(item => item.key), ["walking", "sleeping"]);
+  assert.equal(dog[1].records.length, 2);
+  assert.equal(continued.pets.dog.confidence, .01);
+  assert.equal(continued.pets.dog.continued, true);
+});
+
 test("中断、未确认与未采集时段不补猜成连续活动", () => {
   assert.equal(groupActivities([sample(1, 0), sample(2, 20)]).filter(item => item.pet === "dog").length, 2);
   const episodes = groupActivities([sample(1, 0), sample(2, 10, "sleeping", "walking", "error"), sample(3, 20)]);

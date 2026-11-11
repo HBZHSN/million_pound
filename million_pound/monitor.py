@@ -190,7 +190,13 @@ class Monitor:
             self.status["phase"] = "deciding"
             await media.accelerate(raw, fast, cfg.speed, cfg.sample_fps)
             center = self.store.get_activity(activity_id)["images"][0]
-            result = await self.models.decide(cfg, fast, self.images / center)
+            previous = self.store.previous_activity(activity_id)
+            previous_pets = {}
+            if previous and previous["status"] == "done":
+                gap = (started - datetime.fromisoformat(previous["ended_at"])).total_seconds()
+                if 0 <= gap <= 1:
+                    previous_pets = previous["pets"]
+            result = await self.models.decide(cfg, fast, self.images / center, previous_pets)
             scores = result["scores"]
             self.store.update_activity(activity_id, "done", pets=result["pets"])
             self.status["last_scores"] = scores
