@@ -3,5 +3,10 @@ services:
     image: ghcr.io/willjayyyy/addon-xiaomi-camera-bridge:latest
     network_mode: host
     restart: unless-stopped
+    environment:
+      XIAOMI_CAMERA_ACCESS_MODE: lan
+      XIAOMI_CAMERA_RTSP_USERNAME: xiaomi
+      XIAOMI_CAMERA_RTSP_PASSWORD: ${XIAOMI_CAMERA_RTSP_PASSWORD:?请先填写本地 .env}
+      XIAOMI_CAMERA_WEB_PASSWORD: ${XIAOMI_CAMERA_WEB_PASSWORD:?请先填写本地 .env}
     volumes:
       - ./camera-data:/data

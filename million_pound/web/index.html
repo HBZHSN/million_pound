@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>家庭宠物守护 · Million Pound</title><link rel="stylesheet" href="/assets/style.css"><script src="/assets/app.js" defer></script></head>
+<body>
+<header class="topbar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">M</span><span>Million Pound<small>家庭宠物守护</small></span></a><nav aria-label="主导航"><a href="#events">事件</a><a href="#settings">设置</a><button id="logout" class="quiet">退出</button></nav></header>
+<main class="shell">
+  <section class="hero"><div><p class="eyebrow">HOME, ALWAYS IN SIGHT</p><h1>替你留意，它们的日常。</h1><p class="muted">一只拉布拉多，一只缅因猫。吃饭、捣蛋，还有需要及时知道的小意外。</p></div><button id="toggle" class="primary" disabled>读取状态…</button></section>
+  <div id="message" class="notice" role="status" aria-live="polite" hidden></div>
+  <section class="status-grid" aria-label="运行状态">
+    <article class="card"><p class="eyebrow">守护状态</p><h2 id="phase">连接中</h2><p id="last-error" class="muted">正在读取运行状态</p></article>
+    <article class="card"><p class="eyebrow">最近一次采样</p><h2 id="last-started">—</h2><p id="next-sample" class="muted">时间均为北京时间</p></article>
+    <article class="card"><p class="eyebrow">最近一次复核</p><h2 id="last-review">—</h2><p class="muted">先由 d3 初判，有候选时才调用 swift-1.5</p></article>
+  </section>
+  <section id="events" class="section"><div class="section-heading"><div><p class="eyebrow">LITTLE MOMENTS</p><h2>最近事件</h2></div><button id="refresh" class="secondary">刷新事件</button></div><div id="event-list" class="event-list"><p class="empty">正在读取事件…</p></div><button id="older" class="secondary" hidden>更早的事件</button></section>
+  <section id="settings" class="section"><div class="section-heading"><div><p class="eyebrow">MAKE IT YOURS</p><h2>守护设置</h2></div><span class="muted">更改后请保存</span></div>
+  <form id="settings-form">
+    <div class="settings-grid">
+      <fieldset class="card"><legend>采样与识别</legend><div class="fields two">
+        <label>采样间隔 · 秒<input name="sample_interval" type="number" min="5" max="86400" required></label>
+        <label>每段录像 · 秒<input name="clip_duration" type="number" min="2" max="120" required></label>
+        <label>视频加速 · 倍<input name="speed" type="number" min="1" max="16" step="0.5" required></label>
+        <label>最短复核间隔 · 秒<input name="review_interval" type="number" min="0" max="86400" required></label>
+      </div><p class="footnote">采样间隔按两轮开始时间计算；处理超过间隔时，完成后再开始下一轮。复核失败也计入复核间隔。</p></fieldset>
+      <fieldset class="card"><legend>什么事需要提醒你</legend><div class="fields">
+        <label class="mode-row"><span>吃饭<small>实际开始进食</small></span><select name="eating"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
+        <label class="mode-row"><span>拆家<small>破坏家具或家居物品</small></span><select name="destruction"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
+        <label class="mode-row"><span>乱拉乱尿<small>指定区域之外的排泄行为</small></span><select name="toileting"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
+      </div><p class="footnote">只有复核确认的事件才会通知。同类、同只宠物的提醒在五分钟内合并。</p></fieldset>
+      <fieldset class="card"><legend>每天的守护时间</legend><p class="muted">北京时间；不添加时段表示全天监控。可跨午夜，开始与结束相同表示全天。</p><div id="windows" class="fields"></div><button id="add-window" type="button" class="secondary">＋ 添加时段</button><label class="retention">截图保留 · 天<input name="retention_days" type="number" min="1" max="365" required></label><p class="footnote">截图到期后自动清理，事件文字记录保留。原始视频仅临时用于分析。</p></fieldset>
+      <fieldset class="card"><legend>摄像头</legend><div class="fields"><label>RTSP / HTTP(S) 视频源<input name="stream_url" type="password" autocomplete="new-password" maxlength="2048" placeholder="rtsp://127.0.0.1:8554/camera_设备ID"></label></div><p class="footnote">先在小米桥接页面完成账号授权，再填入视频流地址。已保存的地址留空即可保留。</p><button id="test-camera" type="button" class="secondary">测试并查看截图</button><img id="preview" class="preview" alt="摄像头连接测试截图" hidden></fieldset>
+      <fieldset class="card"><legend>模型服务</legend><div class="fields"><label>模型服务地址<input name="model_url" type="url" required placeholder="http://127.0.0.1:18080"></label><label>模型 API 密钥<input name="model_key" type="password" autocomplete="new-password" maxlength="2048"></label></div><p class="footnote">初判使用 d3，截图复核使用 swift-1.5。密钥留空保留已有值。</p></fieldset>
+      <fieldset class="card"><legend>消息与访问</legend><div class="fields"><label>Bark 推送地址<input name="bark_url" type="password" autocomplete="new-password" maxlength="4096" placeholder="https://api.day.app/设备密钥"></label><label>公网访问地址<input name="public_url" type="url" placeholder="https://pets.example.com"></label></div><p class="footnote">Bark 地址留空保留已有值。公网地址接通后填写，通知才会附带可访问的截图链接；链接一小时内有效。</p><button id="test-bark" type="button" class="secondary">发送测试通知</button></fieldset>
+    </div><div class="savebar"><p class="muted">保存后立即应用，正在处理的采样会中止。</p><button id="save" class="primary" type="submit">保存设置</button></div>
+  </form></section>
+  <footer>Million Pound · 采样可能遗漏短暂行为，识别结果请结合实际画面判断。</footer>
+</main>
+<template id="window-template"><div class="window-row"><label>开始<input type="time" class="window-start" required></label><span aria-hidden="true">—</span><label>结束<input type="time" class="window-end" required></label><button type="button" class="quiet remove-window" aria-label="删除该监控时段">删除</button></div></template>
+<template id="event-template"><article class="card event"><div class="event-header"><h3></h3><span class="badge"></span></div><time></time><p class="description"></p><p class="event-meta muted"></p><div class="event-images"></div></article></template>
+</body></html>
