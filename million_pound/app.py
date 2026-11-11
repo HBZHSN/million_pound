@@ -98,7 +98,7 @@ def create_app(root: Path = ROOT):
 
     @app.get("/assets/{name}")
     async def asset(name: str):
-        if name not in {"app.js", "login.js", "activities.js", "client.js", "style.css"}:
+        if name not in {"app.js", "login.js", "activities.js", "timeline.js", "client.js", "style.css"}:
             raise HTTPException(404)
         return FileResponse(ASSETS / name)
 

@@ -251,7 +251,25 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(calls[0][0], "/v1/systemone")
             self.assertTrue(calls[0][1]["videos"][0].startswith("data:video/mp4;base64,"))
             self.assertEqual(set(calls[0][1]["questions"]), {"eating", "destruction", "toileting", "dog", "cat"})
+            self.assertNotIn("drinking", calls[0][1]["questions"]["dog"]["criteria"])
+            self.assertIn("喝水", calls[0][1]["questions"]["dog"]["criteria"]["eating"])
+            self.assertIn("百万", calls[0][1]["questions"]["dog"]["instructions"])
+            self.assertIn("英镑", calls[0][1]["questions"]["cat"]["instructions"])
             self.assertEqual(calls[1][1]["model"], "swift-1.5")
+
+    async def test_review_supports_eating_and_drinking_and_uses_pet_names(self):
+        def handler(request):
+            payload = json.loads(request.content)
+            prompt = payload["messages"][0]["content"][0]["text"]
+            self.assertIn("进食或饮水均可", prompt)
+            response = {"events": [{"type": "eating", "confirmed": True, "pet": "both", "description": "拉布拉多犬和缅因猫在碗前吃喝"}]}
+            return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(response)}}]})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "frame.jpg"
+            path.write_bytes(b"fixture")
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                result = await Models(client).review(Settings(), ["eating"], [path], [1])
+                self.assertEqual(result[0].description, "百万和英镑在碗前吃喝")
 
     async def test_invalid_probability_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:

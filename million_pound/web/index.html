@@ -4,7 +4,7 @@
 <body>
 <header class="topbar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">M</span><span>Million Pound<small>家庭宠物守护</small></span></a><nav aria-label="主导航"><a href="/activities">活动时间线</a><a href="#events">事件</a><a href="#settings">设置</a><button id="logout" class="quiet">退出</button></nav></header>
 <main class="shell">
-  <section class="hero"><div><p class="eyebrow">HOME, ALWAYS IN SIGHT</p><h1>替你留意，它们的日常。</h1><p class="muted">一只拉布拉多，一只缅因猫。吃饭、捣蛋，还有需要及时知道的小意外。</p></div><button id="toggle" class="primary" disabled>读取状态…</button></section>
+  <section class="hero"><div><p class="eyebrow">HOME, ALWAYS IN SIGHT</p><h1>替你留意，它们的日常。</h1><p class="muted">百万和英镑的吃喝、玩耍，还有需要及时知道的小意外。</p></div><button id="toggle" class="primary" disabled>读取状态…</button></section>
   <div id="message" class="notice" role="status" aria-live="polite" hidden></div>
   <section class="status-grid" aria-label="运行状态">
     <article class="card"><p class="eyebrow">守护状态</p><h2 id="phase">连接中</h2><p id="last-error" class="muted">正在读取运行状态</p></article>
@@ -22,7 +22,7 @@
         <label>最短复核间隔 · 秒<input name="review_interval" type="number" min="0" max="86400" required></label>
       </div><p class="footnote">持续录像，按片段抽帧加速交给 d3；模型分析时继续采集。默认每 10 秒分析一次，每秒抽 2 帧、4 倍速。复核失败也计入复核间隔。</p></fieldset>
       <fieldset class="card"><legend>什么事需要提醒你</legend><div class="fields">
-        <label class="mode-row"><span>吃饭<small>实际开始进食</small></span><select name="eating"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
+        <label class="mode-row"><span>吃喝<small>进食或饮水，统一记录</small></span><select name="eating"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
         <label class="mode-row"><span>拆家<small>破坏家具或家居物品</small></span><select name="destruction"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
         <label class="mode-row"><span>乱拉乱尿<small>指定区域之外的排泄行为</small></span><select name="toileting"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
       </div><p class="footnote">只有复核确认的事件才会通知。同类、同只宠物的提醒在五分钟内合并。</p></fieldset>

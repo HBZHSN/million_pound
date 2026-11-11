@@ -1,8 +1,8 @@
 "use strict";
-import {$, action, api, formatTime, initSession, notice} from "/assets/client.js";
+import {$, action, api, formatTime, initSession, notice, petNames} from "/assets/client.js";
 const form = $("#settings-form");
-const names = {eating: "吃饭", destruction: "拆家", toileting: "乱拉乱尿"};
-const pets = {dog: "拉布拉多", cat: "缅因猫", both: "两只宠物", unknown: "宠物待确认"};
+const names = {eating: "吃喝", destruction: "拆家", toileting: "乱拉乱尿"};
+const pets = {dog: "百万", cat: "英镑", both: "百万和英镑", unknown: "宠物待确认"};
 const states = {confirmed: "已确认", rejected: "复核未成立", unreviewed: "未复核 · 间隔限制", reviewing: "复核中", review_error: "复核失败", cancelled: "已中断"};
 const notifications = {none: "未通知", record_only: "只记录", deduplicated: "五分钟内已提醒", not_configured: "未配置 Bark", sending: "发送中", sent: "图文通知已发送", sent_text: "文字通知已发送", failed: "通知失败", unknown: "通知结果待确认"};
 const phases = {starting: "正在启动", disabled: "守护已暂停", needs_camera: "等待摄像头", outside_schedule: "当前不在守护时段", waiting: "等待下次采样", recording: "正在录制", deciding: "正在初判", reviewing: "正在复核", no_event: "本轮未发现事件", review_cooldown: "候选已记录，等待复核间隔", complete: "本轮处理完成", error: "处理遇到问题"};
@@ -58,7 +58,7 @@ async function loadEvents(older = false) {
     const time = fragment.querySelector("time");
     time.dateTime = event.occurred_at;
     time.textContent = formatTime(event.occurred_at) + " · 北京时间采样开始";
-    fragment.querySelector(".description").textContent = event.description;
+    fragment.querySelector(".description").textContent = petNames(event.description);
     fragment.querySelector(".event-meta").textContent = "初判 " + Math.round(event.score * 100) + "% · " + (notifications[event.notification] || event.notification) + (event.images.length ? "" : " · 截图已过期");
     event.images.forEach((_, i) => {
       const link = document.createElement("a"), image = document.createElement("img");

@@ -8,7 +8,7 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 
-from .config import ACTIVITIES, EVENTS, Settings
+from .config import EVENTS, Settings
 
 
 class ModelError(RuntimeError):
@@ -56,13 +56,13 @@ class Models:
 
     async def decide(self, settings: Settings, video: Path):
         descriptions = {
-            "eating": "宠物正在食盆前实际进食，不包括路过、闻嗅或饮水",
+            "eating": "宠物正在碗或饮水器前实际吃东西或喝水，统一称为吃喝，不区分水盆和饭盆，不包括路过或闻嗅",
             "destruction": "宠物正在撕咬或抓挠家具、门、线缆等家居物品，不包括正常玩宠物玩具",
             "toileting": "宠物正在猫砂盆或指定厕所之外排尿或排便，需有明确行为证据，不包括普通蹲坐",
         }
         payload = {
             "model": "d3",
-            "state": f"家庭宠物监控，一只拉布拉多和一只缅因猫。这是 {settings.speed} 倍速视频。"
+            "state": f"家庭宠物监控，百万是拉布拉多犬，英镑是缅因猫。这是 {settings.speed} 倍速视频。"
                      f"从原视频每秒抽取 {settings.sample_fps} 帧。"
                      "只根据可见画面判断，不凭动物品种推测，区分拉布拉多与缅因猫。",
             "questions": {key: {"type": "noul", "instructions": text + "，是否发生？",
@@ -72,8 +72,7 @@ class Models:
         }
         criteria = {
             "sleeping": "该宠物卧躺、闭眼并持续静止，明确在睡觉；不能仅凭蹲坐或单帧静止判断睡觉",
-            "drinking": "该宠物正在水碗或饮水器前实际喝水，不是闻嗅或进食",
-            "eating": "该宠物正在食盆或食物前实际进食，不是路过、饮水或闻嗅",
+            "eating": "该宠物正在碗、食物或饮水器前实际吃东西或喝水，统一为吃喝；不要求区分水盆和饭盆，不包括路过或闻嗅",
             "walking": "该宠物在画面中走动、散步或跑动",
             "playing": "该宠物正在玩玩具、与另一只宠物互动或嬉戏",
             "resting": "该宠物坐着、站着或卧躺休息，没有明确睡着或其他行为",
@@ -81,7 +80,7 @@ class Models:
             "other": "能看见该宠物，正在进行梳理、抓痒等上述类别之外的活动",
             "uncertain": "画面遮挡、太暗、身份或行为证据不足，无法可靠判断",
         }
-        for pet, name in (("dog", "拉布拉多犬"), ("cat", "缅因猫")):
+        for pet, name in (("dog", "百万"), ("cat", "英镑")):
             payload["questions"][pet] = {
                 "type": "choice", "instructions": f"这段视频里{name}最主要的活动是什么？"
                 "请选择一个最符合可见证据的类别。不清楚时选 uncertain，不要把看不清等同于未入镜。",
@@ -98,7 +97,7 @@ class Models:
                 answer = result["answers"][pet]
                 activity = answer["choice"]
                 confidence = answer["probabilities"][activity]
-                if activity not in ACTIVITIES or isinstance(confidence, bool) or not isinstance(confidence, (int, float)) \
+                if activity not in criteria or isinstance(confidence, bool) or not isinstance(confidence, (int, float)) \
                         or not math.isfinite(confidence) or not 0 <= confidence <= 1:
                     raise ValueError
                 pets[pet] = {"activity": activity if confidence >= 0.6 else "uncertain", "confidence": confidence}
@@ -108,11 +107,12 @@ class Models:
 
     async def review(self, settings: Settings, candidates: list[str], images: list[Path], offsets: list[float]):
         prompt = (
-            "你在复核家庭宠物监控，宠物是一只拉布拉多和一只缅因猫。截图来自同一段原速视频，"
+            "你在复核家庭宠物监控，百万是拉布拉多犬，英镑是缅因猫。截图来自同一段原速视频，"
             f"时间偏移（秒）依次为 {offsets}。初判候选为 {candidates}。逐一复核所有候选，"
-            "没有清晰证据则 confirmed=false。吃饭需看见实际进食；拆家不包括玩宠物玩具；"
+            "没有清晰证据则 confirmed=false。eating 统一表示吃喝，进食或饮水均可，不必分辨水盆和饭盆；"
+            "但需有实际吃喝证据，不能只是路过或闻嗅。拆家不包括玩宠物玩具；"
             "乱拉乱尿需明确排泄证据且在猫砂盆或指定厕所外，仅蹲坐不足以确认。"
-            "看不清指定区域或行为时请拒绝确认，不得猜测。描述用中文简述证据。"
+            "看不清指定区域或行为时请拒绝确认，不得猜测。描述用百万、英镑称呼宠物，统一用吃喝，不猜测碗内是水还是食物。"
             '只返回 JSON：{"events":[{"type":"eating|destruction|toileting",'
             '"confirmed":true,"pet":"dog|cat|both|unknown","description":"证据描述"}]}。'
             "每个候选恰好返回一次，不添加其他事件。"
@@ -134,6 +134,9 @@ class Models:
             kinds = [event.type for event in parsed.events]
             if len(kinds) != len(candidates) or set(kinds) != set(candidates):
                 raise ValueError
+            for event in parsed.events:
+                event.description = (event.description.replace("拉布拉多犬", "百万").replace("拉布拉多", "百万")
+                                     .replace("缅因猫", "英镑").replace("缅因", "英镑"))
             return parsed.events
         except (KeyError, IndexError, TypeError, AttributeError, ValueError, ValidationError):
             raise ModelError("swift-1.5 复核返回格式无效，未确认事件") from None

@@ -2,6 +2,10 @@
 export const $ = (selector) => document.querySelector(selector);
 let csrf = "";
 
+export function petNames(text) {
+  return text.replace(/拉布拉多(?:犬)?/g, "百万").replace(/缅因猫?/g, "英镑");
+}
+
 export const formatTime = (value) => value ? new Intl.DateTimeFormat("zh-CN", {
   timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
 }).format(new Date(value)) : "—";

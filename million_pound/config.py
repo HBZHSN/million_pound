@@ -12,8 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ROOT = Path(__file__).resolve().parent.parent
 BEIJING = ZoneInfo("Asia/Shanghai")
-EVENTS = {"eating": "吃饭", "destruction": "拆家", "toileting": "乱拉乱尿"}
-ACTIVITIES = {"sleeping": "睡觉", "drinking": "喝水", "eating": "吃饭", "walking": "走动 / 散步",
+EVENTS = {"eating": "吃喝", "destruction": "拆家", "toileting": "乱拉乱尿"}
+ACTIVITIES = {"sleeping": "睡觉", "drinking": "吃喝", "eating": "吃喝", "walking": "走动 / 散步",
               "playing": "玩耍", "resting": "休息", "not_visible": "未入镜", "other": "其他活动", "uncertain": "判断不清"}
 
 
@@ -83,7 +83,7 @@ class Settings(BaseModel):
     @classmethod
     def modes_valid(cls, value):
         if set(value) != set(EVENTS):
-            raise ValueError("必须配置吃饭、拆家和乱拉乱尿三类事件")
+            raise ValueError("必须配置吃喝、拆家和乱拉乱尿三类事件")
         return value
 
 
