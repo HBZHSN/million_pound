@@ -473,7 +473,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_continuation_uses_only_adjacent_completed_record_from_store(self):
         self.monitor.models.decide.return_value["scores"] = {"eating": .1, "destruction": .1, "toileting": .1}
         base = datetime.now(timezone.utc) - timedelta(hours=1)
-        for i, (status, gap) in enumerate((("done", 0), ("done", 1), ("done", 2), ("done", -1),
+        for i, (status, gap) in enumerate((("done", 0), ("done", -.001), ("done", -.021), ("done", -.1),
+                                            ("done", -.101), ("done", 1), ("done", 2), ("done", -1),
                                             ("error", 0), ("skipped", 0), ("cancelled", 0), ("pending", 0))):
             with self.subTest(status=status, gap=gap):
                 start = base + timedelta(seconds=i * 100)
@@ -481,7 +482,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                 pets = {"dog": {"activity": "sleeping", "visibility": "present", "identity_verified": True}}
                 self.store.update_activity(prior_id, status, pets=pets)
                 await self.analyze(started=start + timedelta(seconds=10 + gap))
-                expected = pets if status == "done" and 0 <= gap <= 1 else {}
+                expected = pets if status == "done" and -.1 <= gap <= 1 else {}
                 self.assertEqual(self.monitor.models.decide.call_args.args[3], expected)
 
     async def test_record_mode_notification_and_review_interval(self):

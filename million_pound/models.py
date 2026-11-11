@@ -1,6 +1,7 @@
 import base64
 import json
 import math
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
@@ -63,6 +64,15 @@ def choice_answer(result, key, criteria):
         return choice, confidence
     except (KeyError, TypeError, ValueError):
         raise ModelError("d3 返回的入镜或活动判断格式无效") from None
+
+
+def previous_pets(previous, started):
+    if previous and previous["status"] == "done":
+        gap = (started - datetime.fromisoformat(previous["ended_at"])).total_seconds()
+        # 连续切片的末帧边界可能产生几十毫秒的重叠。
+        if -0.1 <= gap <= 1:
+            return previous["pets"]
+    return {}
 
 
 def activity_decision(activity, confidence, previous):

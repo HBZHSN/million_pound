@@ -65,7 +65,7 @@ function renderTimeline() {
   $("#selected-date").textContent = $("#day").value ? new Intl.DateTimeFormat("zh-CN", {timeZone: "Asia/Shanghai", month: "long", day: "numeric", weekday: "long"}).format(new Date($("#day").value + "T12:00:00+08:00")) : "请选择日期";
 }
 
-async function loadActivities(older = false) {
+async function loadActivities(older = false, reset = false) {
   if (!$("#day").value) { notice("请选择日期", true); return; }
   const revision = ++generation;
   const nextFilter = $("#day").value + "/" + $("#hour").value;
@@ -78,8 +78,8 @@ async function loadActivities(older = false) {
   browsingOlder = older;
   const changed = filter !== nextFilter;
   const missed = !older && records.size && result.items.length && !result.items.some(item => records.has(item.id));
-  if (changed || missed) records.clear();
-  if (changed || missed || older || !records.size) before = result.next_before;
+  if (changed || missed || reset) records.clear();
+  if (changed || missed || reset || older || !records.size) before = result.next_before;
   filter = nextFilter; labels = result.labels;
   for (const item of result.items) records.set(item.id, item);
   if (!$("#activity-details").open) renderTimeline();
@@ -158,7 +158,7 @@ $("#detail-image").addEventListener("error", () => { $("#detail-original").hidde
 $("#previous-photo").addEventListener("click", () => { photoIndex--; showPhoto(); });
 $("#next-photo").addEventListener("click", () => { photoIndex++; showPhoto(); });
 $("#photo-position").addEventListener("change", event => { photoIndex = Number(event.target.value); showPhoto(); });
-$("#timeline-filters").addEventListener("submit", event => { event.preventDefault(); action($("#refresh-activities"), () => loadActivities()); });
+$("#timeline-filters").addEventListener("submit", event => { event.preventDefault(); action($("#refresh-activities"), () => loadActivities(false, true)); });
 for (const selector of ["#day", "#hour"]) $(selector).addEventListener("change", () => action($("#refresh-activities"), () => loadActivities()));
 $("#pet").addEventListener("change", renderTimeline);
 for (const [selector, offset] of [["#previous-day", -1], ["#next-day", 1]]) $(selector).addEventListener("click", () => {

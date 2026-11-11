@@ -78,6 +78,18 @@ class RecalculationTests(unittest.TestCase):
         self.assertEqual(Path(result["audit"]).stat().st_mode & 0o777, 0o600)
         self.assertEqual(recalculate(self.data)["updated_records"], 0)
 
+    def test_millisecond_timestamp_overlap_preserves_activity_continuity(self):
+        self.add(0, observation())
+        first = self.add(9.979, observation("uncertain", .79))
+        second = self.add(19.978, observation("uncertain", .2))
+        large_overlap = self.add(28.9, observation("uncertain", .2))
+        recalculate(self.data)
+        for activity_id in (first, second):
+            value = self.store.get_activity(activity_id)["pets"]["dog"]
+            self.assertEqual(value["activity"], "sleeping")
+            self.assertTrue(value["continued"])
+        self.assertEqual(self.store.get_activity(large_overlap)["pets"]["dog"]["activity"], "uncertain")
+
     def test_gaps_failed_records_and_absence_break_continuation(self):
         self.add(0, observation())
         after_gap = self.add(20, observation("uncertain", .2))

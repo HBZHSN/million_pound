@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ACTIVITIES, ROOT, write_private
-from .models import PET_NAMES, activity_decision
+from .models import PET_NAMES, activity_decision, previous_pets
 
 
 def recalculate(data: Path):
@@ -36,12 +36,8 @@ def recalculate(data: Path):
             if row["id"] < first:
                 continue
             pets = {pet: dict(value) for pet, value in row["pets"].items()}
-            prior = {}
             if row["status"] == "done":
-                if previous and previous["status"] == "done":
-                    gap = (datetime.fromisoformat(row["started_at"]) - datetime.fromisoformat(previous["ended_at"])).total_seconds()
-                    if 0 <= gap <= 1:
-                        prior = previous["pets"]
+                prior = previous_pets(previous, datetime.fromisoformat(row["started_at"]))
                 for pet, value in pets.items():
                     if not value.get("identity_verified") or value.get("visibility") != "present" or "proposed_activity" not in value:
                         continue
