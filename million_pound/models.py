@@ -11,6 +11,16 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 from .config import EVENTS, Settings
 
 
+PET_NAMES = {"dog": "百万", "cat": "英镑"}
+PET_APPEARANCE = (
+    "百万是浅黄色或奶油色、短毛、大体型的拉布拉多犬。"
+    "英镑是深色或黑色、长毛、体型明显小于百万、长尾蓬松的缅因猫。"
+    "已知家里养了两只，不代表两只都在画面中。不能把百万的动作归给英镑，反之亦然。"
+    "靠枕、玩具、垫子、塑料袋、黑色拖鞋及圆桶里的阴影不是宠物。"
+    "不要仅凭颜色、静止黑块、品种或位置猜身份；夜视、遮挡或身体特征无法辨认时，选择 uncertain。"
+)
+
+
 class ModelError(RuntimeError):
     pass
 
@@ -39,6 +49,19 @@ def model_endpoint(settings: Settings, path: str):
     return base + "/v1/" + path
 
 
+def choice_answer(result, key, criteria):
+    try:
+        answer = result["answers"][key]
+        choice = answer["choice"]
+        confidence = answer["probabilities"][choice]
+        if choice not in criteria or isinstance(confidence, bool) or not isinstance(confidence, (int, float)) \
+                or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+            raise ValueError
+        return choice, confidence
+    except (KeyError, TypeError, ValueError):
+        raise ModelError("d3 返回的入镜或活动判断格式无效") from None
+
+
 async def post_json(client: httpx.AsyncClient, url: str, payload: dict, *, key="", service="模型"):
     try:
         response = await client.post(url, json=payload, headers={"Authorization": "Bearer " + key} if key else {})
@@ -54,7 +77,34 @@ class Models:
     def __init__(self, client: httpx.AsyncClient):
         self.client = client
 
-    async def decide(self, settings: Settings, video: Path):
+    async def decide(self, settings: Settings, video: Path, snapshot: Path):
+        state = (PET_APPEARANCE + f"这是 {settings.speed} 倍速录像，从原视频每秒抽取 {settings.sample_fps} 帧。"
+                 "视频和原始截图都来自本次录像，截图取自中间时刻；判断入镜应看整段视频，不能只看中间这一帧。"
+                 "每段独立判断，不沿用上一段的出现状态或行为。")
+        videos = [data_url(video, "video/mp4")]
+        images = [data_url(snapshot, "image/jpeg")]
+        visibility_criteria = {
+            "present": "清楚看见这只宠物的真实身体和可辨认的身份特征，能辨认头耳、躯干、腿或尾巴等组合结构，不是另一只动物或物品",
+            "absent": "没有看到这只宠物；不能因为另一只宠物出现、已知它住在家里或某个垫子存在就认为它也在",
+            "uncertain": "只有模糊局部、遮挡、暗色团块或身份无法确定，无法确认这只宠物是否出现在画面中",
+        }
+        visibility = await post_json(self.client, model_endpoint(settings, "systemone"), {
+            "model": "d3", "state": state + "先逐只清点真正可见的动物，只判断是否入镜，不判断它在做什么。",
+            "questions": {pet + "_presence": {"type": "choice", "instructions": f"能否在本段录像中清楚辨认出{name}的真实身体？",
+                                                "criteria": visibility_criteria} for pet, name in PET_NAMES.items()},
+            "videos": videos, "images": images,
+        }, key=settings.model_key)
+        pets, visible = {}, []
+        for pet in PET_NAMES:
+            presence, confidence = choice_answer(visibility, pet + "_presence", visibility_criteria)
+            verified = presence == "present" and confidence >= 0.8
+            absent = presence == "absent" and confidence >= 0.7
+            pets[pet] = {"activity": "not_visible" if absent else "uncertain", "confidence": confidence if absent else 0,
+                         "visibility": presence, "visibility_confidence": confidence, "identity_verified": verified}
+            if verified:
+                visible.append(pet)
+        if all(pets[pet]["activity"] == "not_visible" for pet in PET_NAMES):
+            return {"scores": {key: 0 for key in EVENTS}, "pets": pets}
         descriptions = {
             "eating": "宠物正在碗或饮水器前实际吃东西或喝水，统一称为吃喝，不区分水盆和饭盆，不包括路过或闻嗅",
             "destruction": "宠物正在撕咬或抓挠家具、门、线缆等家居物品，不包括正常玩宠物玩具",
@@ -62,16 +112,16 @@ class Models:
         }
         payload = {
             "model": "d3",
-            "state": f"家庭宠物监控，百万是拉布拉多犬，英镑是缅因猫。这是 {settings.speed} 倍速视频。"
-                     f"从原视频每秒抽取 {settings.sample_fps} 帧。"
-                     "只根据可见画面判断，不凭动物品种推测，区分拉布拉多与缅因猫。",
+            "state": state + "入镜检查已确认的目标：" + "、".join(PET_NAMES[pet] for pet in visible) + "。"
+                     "活动仅判断已确认入镜的目标，找不到其真实身体时选 uncertain 或 not_visible。"
+                     "预警仅按画面中可见的实际行为判断，不得猜测。",
             "questions": {key: {"type": "noul", "instructions": text + "，是否发生？",
                                 "criteria": {"true": "明确发生", "false": "未发生或证据不足"}}
                           for key, text in descriptions.items()},
-            "videos": [data_url(video, "video/mp4")],
+            "videos": videos, "images": images,
         }
         criteria = {
-            "sleeping": "该宠物卧躺、闭眼并持续静止，明确在睡觉；不能仅凭蹲坐或单帧静止判断睡觉",
+            "sleeping": "清楚看见这只宠物的身体、头部和闭眼睡姿，在多个时刻持续可见；仅静止、蜷卧、看不清眼睛或没有出现都不能算睡觉，证据不足选 resting 或 uncertain",
             "eating": "该宠物正在碗、食物或饮水器前实际吃东西或喝水，统一为吃喝；不要求区分水盆和饭盆，不包括路过或闻嗅",
             "walking": "该宠物在画面中走动、散步或跑动",
             "playing": "该宠物正在玩玩具、与另一只宠物互动或嬉戏",
@@ -80,7 +130,8 @@ class Models:
             "other": "能看见该宠物，正在进行梳理、抓痒等上述类别之外的活动",
             "uncertain": "画面遮挡、太暗、身份或行为证据不足，无法可靠判断",
         }
-        for pet, name in (("dog", "百万"), ("cat", "英镑")):
+        for pet in visible:
+            name = PET_NAMES[pet]
             payload["questions"][pet] = {
                 "type": "choice", "instructions": f"这段视频里{name}最主要的活动是什么？"
                 "请选择一个最符合可见证据的类别。不清楚时选 uncertain，不要把看不清等同于未入镜。",
@@ -92,22 +143,20 @@ class Models:
             if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1
                    for v in scores.values()):
                 raise ValueError
-            pets = {}
-            for pet in ("dog", "cat"):
-                answer = result["answers"][pet]
-                activity = answer["choice"]
-                confidence = answer["probabilities"][activity]
-                if activity not in criteria or isinstance(confidence, bool) or not isinstance(confidence, (int, float)) \
-                        or not math.isfinite(confidence) or not 0 <= confidence <= 1:
-                    raise ValueError
-                pets[pet] = {"activity": activity if confidence >= 0.6 else "uncertain", "confidence": confidence}
-            return {"scores": scores, "pets": pets}
         except (KeyError, TypeError, ValueError):
             raise ModelError("d3 返回的活动或事件判断格式无效") from None
+        for pet in visible:
+            activity, confidence = choice_answer(result, pet, criteria)
+            threshold = 0.8 if activity == "sleeping" else 0.6
+            pets[pet].update(activity=activity if confidence >= threshold else "uncertain", confidence=confidence,
+                             proposed_activity=activity)
+            if activity == "not_visible":
+                pets[pet].update(activity="uncertain", identity_verified=False)
+        return {"scores": scores, "pets": pets}
 
     async def review(self, settings: Settings, candidates: list[str], images: list[Path], offsets: list[float]):
         prompt = (
-            "你在复核家庭宠物监控，百万是拉布拉多犬，英镑是缅因猫。截图来自同一段原速视频，"
+            "你在复核家庭宠物监控。" + PET_APPEARANCE + "截图来自同一段原速视频，"
             f"时间偏移（秒）依次为 {offsets}。初判候选为 {candidates}。逐一复核所有候选，"
             "没有清晰证据则 confirmed=false。eating 统一表示吃喝，进食或饮水均可，不必分辨水盆和饭盆；"
             "但需有实际吃喝证据，不能只是路过或闻嗅。拆家不包括玩宠物玩具；"

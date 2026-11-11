@@ -2,8 +2,11 @@ export const PETS = {dog: "百万", cat: "英镑"};
 
 export function activityKey(item, pet) {
   if (item.status === "pending") return "pending";
-  if (item.status !== "done") return "gap";
-  const activity = item.pets[pet]?.activity || "uncertain";
+  if (item.status !== "done") return "unknown";
+  const decision = item.pets[pet];
+  const activity = decision?.activity || "uncertain";
+  if (activity === "sleeping" && (!decision.visibility || !decision.identity_verified)) return "unknown";
+  if (activity === "uncertain" || activity === "not_visible") return "unknown";
   return activity === "drinking" ? "eating" : activity;
 }
 

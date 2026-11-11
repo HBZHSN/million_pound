@@ -3,7 +3,6 @@ import {$, action, api, formatTime, initSession, notice, petNames} from "/assets
 import {PETS, activityKey, durationLabel, groupActivities, timelineMoments} from "/assets/timeline.js";
 
 const statuses = {pending: "正在判断", error: "判断失败", skipped: "积压未判断", cancelled: "已中断"};
-const quietActivities = new Set(["uncertain", "gap", "not_visible"]);
 const clock = value => new Intl.DateTimeFormat("zh-CN", {timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false}).format(new Date(value));
 const today = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
 const records = new Map();
@@ -16,7 +15,7 @@ for (let hour = 0; hour < 24; hour++) {
 }
 
 function labelFor(key) {
-  return key === "gap" ? "这段暂无判断" : key === "walking" ? "走动" : labels[key] || "判断不清";
+  return key === "unknown" ? "未知" : key === "walking" ? "走动" : labels[key] || "未知";
 }
 
 function renderTimeline() {
@@ -34,7 +33,7 @@ function renderTimeline() {
   for (const [index, moment] of moments.entries()) {
     const row = $("#moment-template").content.cloneNode(true);
     if (index === 0) row.querySelector("li").classList.add("is-latest");
-    const onlyQuiet = Object.keys(PETS).every(pet => !moment[pet] || quietActivities.has(moment[pet].key));
+    const onlyQuiet = Object.keys(PETS).every(pet => !moment[pet] || moment[pet].key === "unknown");
     row.querySelector("li").classList.toggle("is-muted-moment", onlyQuiet);
     const time = row.querySelector("time"); time.dateTime = new Date(moment.time).toISOString(); time.textContent = clock(moment.time);
     for (const pet of Object.keys(PETS)) {
@@ -42,12 +41,12 @@ function renderTimeline() {
       if (!episode) continue;
       const card = $("#episode-template").content.cloneNode(true);
       const button = card.querySelector("button"); button.dataset.episode = episode.id;
-      button.classList.toggle("is-quiet", quietActivities.has(episode.key));
+      button.classList.toggle("is-quiet", episode.key === "unknown");
       button.setAttribute("aria-label", PETS[pet] + "，" + labelFor(episode.key) + "，" + clock(episode.start) + "至" + clock(episode.end) + "，查看照片");
       card.querySelector(".episode-title").textContent = labelFor(episode.key);
       card.querySelector(".episode-duration").textContent = durationLabel(episode.end - episode.start);
       card.querySelector(".episode-range").textContent = clock(episode.start) === clock(episode.end) ? clock(episode.start) + " 左右" : clock(episode.start) + " — " + clock(episode.end);
-      const icon = ["sleeping", "eating", "walking", "playing", "resting", "not_visible", "other"].includes(episode.key) ? episode.key : "uncertain";
+      const icon = ["sleeping", "eating", "walking", "playing", "resting", "other"].includes(episode.key) ? episode.key : "uncertain";
       card.querySelector(".episode-symbol use").setAttribute("href", "#icon-" + icon);
       row.querySelector('.timeline-cell[data-pet="' + pet + '"]').append(card);
     }
@@ -106,8 +105,24 @@ function showPhoto() {
   $("#detail-caption").textContent = "采集约 " + formatTime(when) + " · 可点击图片查看原图";
   $("#photo-position").setAttribute("aria-valuetext", "第 " + (photoIndex + 1) + " 张画面，采集约 " + formatTime(when));
   const decision = item.pets[pet];
-  $("#detail-confidence").textContent = item.status === "done" && decision ? "这次观察：" + labelFor(activityKey(item, pet)) + " · 模型置信度 " + Math.round(decision.confidence * 100) + "%" : statuses[item.status] || "判断不清";
-  $("#detail-message").textContent = petNames(item.message); $("#detail-message").hidden = !item.message;
+  const legacy = item.status === "done" && decision?.activity === "sleeping" && !decision.visibility;
+  let observation = statuses[item.status] || "判断不清";
+  if (item.status === "done" && decision) {
+    observation = legacy ? "旧模型曾判断：睡觉（未做入镜检查）" : "这次观察：" + labelFor(activityKey(item, pet));
+    if (!legacy && ["not_visible", "uncertain"].includes(decision.activity)) observation += "（" + labelFor(decision.activity) + "）";
+    if (decision.identity_verified && decision.activity === "uncertain" && decision.proposed_activity && decision.proposed_activity !== "uncertain") {
+      observation += "（原始倾向：" + labelFor(decision.proposed_activity) + "，未达确认条件）";
+    }
+    if (!decision.visibility || decision.identity_verified || decision.activity === "not_visible") observation += " · 模型分数 " + Math.round(decision.confidence * 100) + "%";
+  }
+  $("#detail-confidence").textContent = observation;
+  $("#detail-identity").hidden = item.status !== "done" || !decision;
+  if (decision?.visibility) {
+    const identity = decision.identity_verified ? "已确认入镜" : decision.activity === "not_visible" ? "未检测到入镜" : "未能确认身份，暂不判断活动";
+    $("#detail-identity").textContent = "入镜检查：" + identity + " · 模型分数 " + Math.round(decision.visibility_confidence * 100) + "%";
+  } else if (decision) $("#detail-identity").textContent = "入镜检查：旧版未执行，原判断仅供结合画面核对";
+  const message = legacy ? "这条旧记录没有独立检查宠物是否入镜，原来的睡觉判断尚未核验，请结合照片查看。" : item.message;
+  $("#detail-message").textContent = petNames(message); $("#detail-message").hidden = !message;
 }
 
 function openDetails(episode) {

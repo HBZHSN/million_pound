@@ -189,7 +189,8 @@ class Monitor:
             fast = Path(work) / "fast.mp4"
             self.status["phase"] = "deciding"
             await media.accelerate(raw, fast, cfg.speed, cfg.sample_fps)
-            result = await self.models.decide(cfg, fast)
+            center = self.store.get_activity(activity_id)["images"][0]
+            result = await self.models.decide(cfg, fast, self.images / center)
             scores = result["scores"]
             self.store.update_activity(activity_id, "done", pets=result["pets"])
             self.status["last_scores"] = scores
@@ -198,7 +199,6 @@ class Monitor:
                 self.status["phase"] = "no_event"
                 return
             offsets = [round(duration * fraction, 3) for fraction in (0.1, 0.5, 0.9)]
-            center = self.store.get_activity(activity_id)["images"][0]
             prefix = center.rsplit("-", 1)[0]
             paths = [self.images / f"{prefix}-{i}.jpg" for i in range(3)]
             for i in (0, 2):

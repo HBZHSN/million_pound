@@ -14,7 +14,6 @@
   <symbol id="icon-walking" viewBox="0 0 24 24"><path d="m9 10 4-3 4 4 4 1m-8-5-2 7-5 6m5-6 5 2 2 5M3 9h4m-6 5h4"/><circle cx="15" cy="3.5" r="2"/></symbol>
   <symbol id="icon-playing" viewBox="0 0 24 24"><path d="m12 2 2.5 7.5L22 12l-7.5 2.5L12 22l-2.5-7.5L2 12l7.5-2.5z"/></symbol>
   <symbol id="icon-resting" viewBox="0 0 24 24"><path d="M5 16a4 4 0 0 1 1-8 6 6 0 0 1 11-1 4.5 4.5 0 1 1 1 9zM8 20h8"/></symbol>
-  <symbol id="icon-not_visible" viewBox="0 0 24 24"><path d="M3 8V4h4m10 0h4v4M3 16v4h4m10 0h4v-4M8 12h.01M12 12h.01M16 12h.01"/></symbol>
   <symbol id="icon-uncertain" viewBox="0 0 24 24"><path d="M9 8a3 3 0 1 1 5 2c-2 1-2 2-2 4m0 4h.01"/><circle cx="12" cy="12" r="10"/></symbol>
   <symbol id="icon-other" viewBox="0 0 24 24"><circle cx="12" cy="15" r="4"/><ellipse cx="5" cy="9" rx="2" ry="3"/><ellipse cx="10" cy="4" rx="2" ry="3"/><ellipse cx="17" cy="5" rx="2" ry="3"/><ellipse cx="21" cy="11" rx="2" ry="3"/></symbol>
   <symbol id="icon-camera" viewBox="0 0 24 24"><path d="m8 5 2-2h4l2 2h4v15H4V5z"/><circle cx="12" cy="12" r="4"/></symbol>
@@ -28,7 +27,7 @@
 <main class="diary-shell">
   <section class="diary-intro">
     <p class="eyebrow">THEIR LITTLE EVERYDAY</p><h1>百万和英镑的一天</h1>
-    <p class="diary-subtitle">相同活动已合并，点开卡片，看看当时的它们。</p>
+    <p class="diary-subtitle">相同活动已合并，未确认的片段统一为未知。点开卡片，看看当时的它们。</p>
     <form id="timeline-filters" class="diary-toolbar">
       <div class="day-controls">
         <button id="previous-day" type="button" class="icon-button" aria-label="前一天"><svg><use href="#icon-arrow"/></svg></button>
@@ -62,7 +61,7 @@
     <div class="detail-picture"><a id="detail-original" target="_blank" rel="noopener"><img id="detail-image" alt=""></a><p id="detail-missing" hidden>这张截图已过期或暂时不可用，活动记录仍然保留。</p></div>
     <div class="detail-gallery"><button id="previous-photo" type="button" class="quiet">← 更早画面</button><span id="detail-photo-index"></span><button id="next-photo" type="button" class="quiet">更晚画面 →</button></div>
     <label class="photo-scrubber"><span class="visually-hidden">选择这段活动的画面</span><input id="photo-position" type="range" min="0" step="1" aria-label="选择这段活动的画面"></label>
-    <p id="detail-caption" class="detail-caption"></p><p id="detail-confidence" class="detail-confidence"></p>
+    <p id="detail-caption" class="detail-caption"></p><p id="detail-confidence" class="detail-confidence"></p><p id="detail-identity" class="detail-confidence" hidden></p>
     <p id="detail-message" class="notice" hidden></p><p id="detail-count" class="footnote"></p>
   </div>
 </dialog>

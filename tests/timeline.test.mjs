@@ -7,7 +7,8 @@ function sample(id, start, dog = "sleeping", cat = "walking", status = "done") {
   const base = Date.parse("2026-11-11T04:00:00Z");
   return {id, started_at: new Date(base + start * 1000).toISOString(),
     ended_at: new Date(base + (start + 10) * 1000).toISOString(), status,
-    pets: {dog: {activity: dog, confidence: .9}, cat: {activity: cat, confidence: .8}}};
+    pets: {dog: {activity: dog, confidence: .9, visibility: "present", identity_verified: true},
+      cat: {activity: cat, confidence: .8, visibility: "present", identity_verified: true}}};
 }
 
 test("连续观察按宠物独立合并，并共享同一条时间轴", () => {
@@ -35,14 +36,40 @@ test("旧吃饭和喝水记录合并为吃喝，保留原始记录", () => {
 test("中断、未确认与未采集时段不补猜成连续活动", () => {
   assert.equal(groupActivities([sample(1, 0), sample(2, 20)]).filter(item => item.pet === "dog").length, 2);
   const episodes = groupActivities([sample(1, 0), sample(2, 10, "sleeping", "walking", "error"), sample(3, 20)]);
-  assert.deepEqual(episodes.filter(item => item.pet === "dog").map(item => item.key), ["sleeping", "gap", "sleeping"]);
+  assert.deepEqual(episodes.filter(item => item.pet === "dog").map(item => item.key), ["sleeping", "unknown", "sleeping"]);
   const pending = groupActivities([sample(1, 0), sample(2, 10, "sleeping", "walking", "pending"), sample(3, 20)]);
   assert.equal(pending.filter(item => item.pet === "dog").length, 2);
 });
 
-test("未入镜与判断不清分别保留", () => {
-  const episodes = groupActivities([sample(1, 0, "not_visible"), sample(2, 10, "uncertain")]);
-  assert.deepEqual(episodes.filter(item => item.pet === "dog").map(item => item.key), ["uncertain", "not_visible"]);
+test("未入镜、判断不清、旧判断待核验和失败连续合并为未知，保留原始记录", () => {
+  const absent = sample(1, 0, "not_visible"), unclear = sample(2, 10, "uncertain"), legacy = sample(3, 20);
+  delete legacy.pets.dog.visibility;
+  const items = [absent, unclear, legacy, sample(4, 30, "sleeping", "walking", "error"), sample(5, 40, "walking")];
+  const episodes = groupActivities(items).filter(item => item.pet === "dog");
+  assert.deepEqual(episodes.map(item => item.key), ["walking", "unknown"]);
+  assert.deepEqual(episodes[1].records, items.slice(0, 4));
+  assert.equal(episodes[1].end - episodes[1].start, 40000);
+  assert.equal(absent.pets.dog.activity, "not_visible");
+  assert.equal(unclear.pets.dog.activity, "uncertain");
+  assert.equal(legacy.pets.dog.activity, "sleeping");
+  const missing = sample(6, 50);
+  delete missing.pets.dog;
+  assert.equal(activityKey(missing, "dog"), "unknown");
+  assert.equal(groupActivities([absent, sample(7, 20, "uncertain")]).filter(item => item.pet === "dog").length, 2);
+});
+
+test("旧睡觉与缺少入镜确认的睡觉显示未知，已确认活动正常显示", () => {
+  const legacy = sample(1, 0);
+  delete legacy.pets.cat.visibility;
+  assert.equal(activityKey(legacy, "cat"), "walking");
+  assert.equal(legacy.pets.cat.activity, "walking");
+  legacy.pets.cat.activity = "sleeping";
+  assert.equal(activityKey(legacy, "cat"), "unknown");
+  const current = sample(2, 10, "sleeping", "sleeping");
+  current.pets.cat.identity_verified = false;
+  assert.equal(activityKey(current, "cat"), "unknown");
+  current.pets.cat.identity_verified = true;
+  assert.equal(activityKey(current, "cat"), "sleeping");
 });
 
 test("名字与时长使用简洁的显示方式", () => {

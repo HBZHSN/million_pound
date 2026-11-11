@@ -22,6 +22,11 @@ from million_pound.store import Store
 PASSWORD = "test-password-with-12-characters"
 
 
+def visibility_response(dog=("present", .95), cat=("present", .95)):
+    return {"answers": {pet + "_presence": {"choice": choice, "probabilities": {choice: confidence}}
+                        for pet, (choice, confidence) in (("dog", dog), ("cat", cat))}}
+
+
 class ScheduleTests(unittest.TestCase):
     def test_beijing_windows_boundaries_and_overnight(self):
         def at(hour, minute=0):
@@ -233,6 +238,8 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
                 payload = json.loads(request.content)
                 calls.append((request.url.path, payload))
                 if request.url.path.endswith("systemone"):
+                    if "dog_presence" in payload["questions"]:
+                        return httpx.Response(200, json=visibility_response())
                     answers = {key: {"noul": .1} for key in ("eating", "destruction", "toileting")}
                     answers.update({"dog": {"choice": "sleeping", "probabilities": {"sleeping": .9}},
                                     "cat": {"choice": "not_visible", "probabilities": {"not_visible": .5}}})
@@ -241,8 +248,9 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
                 models = Models(client)
                 cfg = Settings(model_url="http://model.local/v1")
-                decision = await models.decide(cfg, path)
+                decision = await models.decide(cfg, path, path)
                 self.assertEqual(decision["pets"]["dog"]["activity"], "sleeping")
+                self.assertTrue(decision["pets"]["dog"]["identity_verified"])
                 self.assertEqual(decision["pets"]["cat"]["activity"], "uncertain")
                 result = await models.review(cfg, ["eating"], [path], [1])
                 self.assertFalse(result[0].confirmed)
@@ -250,12 +258,77 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
                     await models.review(cfg, ["destruction"], [path], [1])
             self.assertEqual(calls[0][0], "/v1/systemone")
             self.assertTrue(calls[0][1]["videos"][0].startswith("data:video/mp4;base64,"))
-            self.assertEqual(set(calls[0][1]["questions"]), {"eating", "destruction", "toileting", "dog", "cat"})
-            self.assertNotIn("drinking", calls[0][1]["questions"]["dog"]["criteria"])
-            self.assertIn("喝水", calls[0][1]["questions"]["dog"]["criteria"]["eating"])
-            self.assertIn("百万", calls[0][1]["questions"]["dog"]["instructions"])
-            self.assertIn("英镑", calls[0][1]["questions"]["cat"]["instructions"])
-            self.assertEqual(calls[1][1]["model"], "swift-1.5")
+            self.assertTrue(calls[0][1]["images"][0].startswith("data:image/jpeg;base64,"))
+            self.assertEqual(set(calls[0][1]["questions"]), {"dog_presence", "cat_presence"})
+            self.assertIn("黑色", calls[0][1]["state"])
+            self.assertEqual(set(calls[1][1]["questions"]), {"eating", "destruction", "toileting", "dog", "cat"})
+            self.assertNotIn("drinking", calls[1][1]["questions"]["dog"]["criteria"])
+            self.assertIn("喝水", calls[1][1]["questions"]["dog"]["criteria"]["eating"])
+            self.assertIn("百万", calls[1][1]["questions"]["dog"]["instructions"])
+            self.assertIn("英镑", calls[1][1]["questions"]["cat"]["instructions"])
+            self.assertEqual(calls[2][1]["model"], "swift-1.5")
+
+    async def decide_with_visibility(self, visibility, activities=None):
+        calls = []
+        def handler(request):
+            payload = json.loads(request.content)
+            calls.append(payload)
+            if "dog_presence" in payload["questions"]:
+                return httpx.Response(200, json=visibility)
+            answers = {key: {"noul": .1} for key in ("eating", "destruction", "toileting")}
+            answers.update({"dog": {"choice": "sleeping", "probabilities": {"sleeping": .99}},
+                            "cat": {"choice": "sleeping", "probabilities": {"sleeping": .99}}})
+            answers.update(activities or {})
+            return httpx.Response(200, json={"answers": answers})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "video.mp4"
+            path.write_bytes(b"fixture")
+            async with httpx.AsyncClient(trust_env=False, transport=httpx.MockTransport(handler)) as client:
+                result = await Models(client).decide(Settings(), path, path)
+        return result, calls
+
+    async def test_absent_cat_never_inherits_dogs_sleep(self):
+        result, calls = await self.decide_with_visibility(visibility_response(cat=("absent", .95)))
+        self.assertEqual(result["pets"]["cat"]["activity"], "not_visible")
+        self.assertFalse(result["pets"]["cat"]["identity_verified"])
+        self.assertEqual(result["pets"]["dog"]["activity"], "sleeping")
+        self.assertNotIn("cat", calls[1]["questions"])
+        self.assertLessEqual(len(calls[1]["questions"]), 6)
+
+    async def test_unclear_identity_is_not_classified_as_sleeping(self):
+        for visibility in (("present", .7), ("present", .79), ("uncertain", .95), ("absent", .6)):
+            with self.subTest(visibility=visibility):
+                result, calls = await self.decide_with_visibility(visibility_response(cat=visibility))
+                self.assertEqual(result["pets"]["cat"]["activity"], "uncertain")
+                self.assertNotIn("cat", calls[1]["questions"])
+
+    async def test_visible_cat_is_not_suppressed_by_presence_gate(self):
+        result, calls = await self.decide_with_visibility(visibility_response(cat=("present", .8)), {
+            "cat": {"choice": "walking", "probabilities": {"walking": .9}}})
+        self.assertEqual(result["pets"]["cat"]["activity"], "walking")
+        self.assertTrue(result["pets"]["cat"]["identity_verified"])
+        self.assertIn("cat", calls[1]["questions"])
+
+    async def test_both_absent_skip_activity_and_warning_calls(self):
+        result, calls = await self.decide_with_visibility(visibility_response(dog=("absent", .95), cat=("absent", .95)))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(all(pet["activity"] == "not_visible" for pet in result["pets"].values()))
+        self.assertTrue(all(score == 0 for score in result["scores"].values()))
+
+    async def test_sleep_requires_stronger_score_and_visibility_must_agree(self):
+        result, _ = await self.decide_with_visibility(visibility_response(), {
+            "cat": {"choice": "sleeping", "probabilities": {"sleeping": .75}}})
+        self.assertEqual(result["pets"]["cat"]["activity"], "uncertain")
+        self.assertEqual(result["pets"]["cat"]["proposed_activity"], "sleeping")
+        result, _ = await self.decide_with_visibility(visibility_response(), {
+            "cat": {"choice": "not_visible", "probabilities": {"not_visible": .95}}})
+        self.assertEqual(result["pets"]["cat"]["activity"], "uncertain")
+        self.assertFalse(result["pets"]["cat"]["identity_verified"])
+
+    async def test_invalid_visibility_does_not_confirm_presence(self):
+        for score in (True, float("nan"), 1.1):
+            with self.subTest(score=score), self.assertRaises(ModelError):
+                await self.decide_with_visibility(visibility_response(cat=("present", score)))
 
     async def test_review_supports_eating_and_drinking_and_uses_pet_names(self):
         def handler(request):
@@ -275,9 +348,12 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "video"
             path.write_bytes(b"fixture")
-            async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"answers": {}}))) as client:
+            def handler(request):
+                payload = json.loads(request.content)
+                return httpx.Response(200, json=visibility_response() if "dog_presence" in payload["questions"] else {"answers": {}})
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
                 with self.assertRaises(ModelError):
-                    await Models(client).decide(Settings(), path)
+                    await Models(client).decide(Settings(), path, path)
 
     async def test_bark_normalizes_example_url_and_preserves_options(self):
         def handler(request):
