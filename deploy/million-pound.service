@@ -1,0 +1,17 @@
+[Unit]
+Description=Million Pound pet monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/million-pound
+ExecStart=%h/million-pound/.venv/bin/python -m million_pound serve
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+StandardOutput=append:%h/million-pound/data/server.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target
