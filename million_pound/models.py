@@ -65,6 +65,14 @@ def choice_answer(result, key, criteria):
         raise ModelError("d3 返回的入镜或活动判断格式无效") from None
 
 
+def activity_decision(activity, confidence, previous):
+    threshold = 0.8 if activity == "sleeping" else 0.6
+    same = (activity not in ("uncertain", "not_visible") and previous.get("activity") == activity
+            and previous.get("identity_verified") and previous.get("visibility") == "present")
+    return {"activity": activity if same or confidence >= threshold else "uncertain",
+            "continued": bool(same and confidence < threshold)}
+
+
 async def post_json(client: httpx.AsyncClient, url: str, payload: dict, *, key="", service="模型"):
     try:
         response = await client.post(url, json=payload, headers={"Authorization": "Bearer " + key} if key else {})
@@ -150,12 +158,8 @@ class Models:
             raise ModelError("d3 返回的活动或事件判断格式无效") from None
         for pet in visible:
             activity, confidence = choice_answer(result, pet, criteria)
-            threshold = 0.8 if activity == "sleeping" else 0.6
-            prior = (previous or {}).get(pet, {})
-            same = (activity not in ("uncertain", "not_visible") and prior.get("activity") == activity
-                    and prior.get("identity_verified") and prior.get("visibility") == "present")
-            pets[pet].update(activity=activity if same or confidence >= threshold else "uncertain", confidence=confidence,
-                             proposed_activity=activity, continued=bool(same and confidence < threshold))
+            pets[pet].update(activity_decision(activity, confidence, (previous or {}).get(pet, {})),
+                             confidence=confidence, proposed_activity=activity)
             if activity == "not_visible":
                 pets[pet].update(activity="uncertain", identity_verified=False)
         return {"scores": scores, "pets": pets}
