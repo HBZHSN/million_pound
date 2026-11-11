@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 ROOT = Path(__file__).resolve().parent.parent
 BEIJING = ZoneInfo("Asia/Shanghai")
 EVENTS = {"eating": "吃饭", "destruction": "拆家", "toileting": "乱拉乱尿"}
+ACTIVITIES = {"sleeping": "睡觉", "drinking": "喝水", "eating": "吃饭", "walking": "走动 / 散步",
+              "playing": "玩耍", "resting": "休息", "not_visible": "未入镜", "other": "其他活动", "uncertain": "判断不清"}
 
 
 def write_private(path: Path, value: dict):
@@ -38,8 +40,8 @@ class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool = False
     stream_url: str = Field(default="", max_length=2048)
-    sample_interval: int = Field(default=60, ge=5, le=86400)
     clip_duration: int = Field(default=10, ge=2, le=120)
+    sample_fps: float = Field(default=2, ge=0.5, le=5)
     speed: float = Field(default=4, ge=1, le=16)
     review_interval: int = Field(default=60, ge=0, le=86400)
     windows: list[TimeWindow] = Field(default_factory=list, max_length=24)
@@ -97,7 +99,9 @@ def in_schedule(windows: list[TimeWindow], now: datetime) -> bool:
 class Config:
     def __init__(self, root: Path):
         self.path = root / "config.json"
-        self.current = Settings.model_validate_json(self.path.read_text()) if self.path.exists() else Settings()
+        value = json.loads(self.path.read_text()) if self.path.exists() else {}
+        value.pop("sample_interval", None)
+        self.current = Settings.model_validate(value)
 
     def save(self, settings: Settings):
         write_private(self.path, settings.model_dump())

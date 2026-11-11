@@ -3,7 +3,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import media
@@ -15,7 +15,7 @@ class Monitor:
     def __init__(self, config, store, security, data: Path, client):
         self.config, self.store, self.security = config, store, security
         self.data, self.client = data, client
-        for prefix in ("clip-", "preview-"):
+        for prefix in ("capture-", "clip-", "preview-"):
             for old in data.glob(prefix + "*"):
                 if old.is_dir() and not old.is_symlink():
                     shutil.rmtree(old)
@@ -24,94 +24,185 @@ class Monitor:
         self.models = Models(client)
         self.wake = asyncio.Event()
         self.capture_lock = asyncio.Lock()
-        self.cycle_task = None
+        self.session_task = None
         self.task = None
         self.stopping = False
         self.status = {"phase": "starting", "last_error": None, "last_started": None,
-                       "last_finished": None, "next_sample": None, "last_scores": None}
+                       "last_finished": None, "last_capture": None, "last_scores": None,
+                       "recording": False, "queued": 0, "skipped": 0}
 
     def changed(self):
-        if self.cycle_task and not self.cycle_task.done():
-            self.cycle_task.cancel()
+        if self.session_task and not self.session_task.done() and not self.session_task.cancelling():
+            self.session_task.cancel()
         self.wake.set()
 
     async def close(self):
         self.stopping = True
+        self.changed()
         if self.task:
-            self.task.cancel()
             try:
                 await self.task
             except asyncio.CancelledError:
                 pass
 
     async def run(self):
-        next_due, cleaned = 0, 0
-        while True:
-            if self.wake.is_set():
+        retry_at, cleaned = 0, 0
+        try:
+            while not self.stopping:
                 self.wake.clear()
-                next_due = 0
-            cfg = self.config.current.model_copy(deep=True)
-            now = datetime.now(timezone.utc)
-            self.status["next_sample"] = None
-            try:
+                cfg = self.config.current.model_copy(deep=True)
+                if self.session_task and self.session_task.done():
+                    try:
+                        await self.session_task
+                    except asyncio.CancelledError:
+                        retry_at = 0
+                    except Exception as exc:
+                        self.status.update(phase="error", last_error=self.error_message(exc))
+                        retry_at = time.monotonic() + 10
+                    self.session_task = None
+                phase = ("disabled" if not cfg.enabled else "needs_camera" if not cfg.stream_url
+                         else "outside_schedule" if not in_schedule(cfg.windows, datetime.now(timezone.utc)) else None)
+                if phase:
+                    if self.session_task:
+                        if not self.session_task.cancelling():
+                            self.session_task.cancel()
+                        await asyncio.gather(self.session_task, return_exceptions=True)
+                        self.session_task = None
+                    self.status["phase"] = phase
+                    retry_at = 0
+                elif self.session_task is None and time.monotonic() >= retry_at:
+                    self.status.update(phase="recording", last_error=None)
+                    self.session_task = asyncio.create_task(self.capture(cfg))
                 if time.monotonic() - cleaned > 3600:
                     self.store.cleanup(self.images, cfg.retention_days)
                     cleaned = time.monotonic()
-                if not cfg.enabled:
-                    self.status["phase"] = "disabled"
-                elif not cfg.stream_url:
-                    self.status["phase"] = "needs_camera"
-                elif not in_schedule(cfg.windows, now):
-                    self.status["phase"] = "outside_schedule"
-                elif time.monotonic() >= next_due:
-                    started = time.monotonic()
-                    self.status.update(last_started=now.isoformat(), last_error=None)
-                    self.cycle_task = asyncio.create_task(self.cycle(cfg))
-                    try:
-                        await self.cycle_task
-                    except asyncio.CancelledError:
-                        if self.stopping:
-                            raise
-                        self.status["phase"] = "waiting"
-                    next_due = max(started + cfg.sample_interval, time.monotonic() + 1)
-                    self.status["last_finished"] = datetime.now(timezone.utc).isoformat()
-                else:
-                    self.status["phase"] = "waiting"
-                if cfg.enabled and cfg.stream_url and in_schedule(cfg.windows, now):
-                    self.status["next_sample"] = time.time() + max(0, next_due - time.monotonic())
-            except (media.MediaError, ModelError, OSError) as exc:
-                self.status.update(phase="error", last_error=str(exc) if isinstance(exc, (media.MediaError, ModelError))
-                                   else "本地文件读写失败，请检查磁盘空间和权限")
-                next_due = time.monotonic() + min(30, cfg.sample_interval)
-            except Exception:
-                self.status.update(phase="error", last_error="监控处理异常，请检查本地配置后重试")
-                next_due = time.monotonic() + 30
-            delay = min(10, max(1, next_due - time.monotonic())) if next_due else 10
-            try:
-                await asyncio.wait_for(self.wake.wait(), timeout=delay)
-            except TimeoutError:
-                pass
+                try:
+                    await asyncio.wait_for(self.wake.wait(), timeout=1)
+                except TimeoutError:
+                    pass
+        finally:
+            if self.session_task:
+                if not self.session_task.cancelling():
+                    self.session_task.cancel()
+                await asyncio.gather(self.session_task, return_exceptions=True)
+            self.status.update(recording=False, queued=0)
 
-    async def cycle(self, cfg):
+    @staticmethod
+    def error_message(exc):
+        return str(exc) if isinstance(exc, (media.MediaError, ModelError)) else "处理失败，请检查本地磁盘和配置"
+
+    async def capture(self, cfg):
+        if shutil.disk_usage(self.data).free < 1024**3:
+            raise media.MediaError("可用空间不足 1GB，已暂停采集，请清理磁盘")
+        with tempfile.TemporaryDirectory(prefix="capture-", dir=self.data) as work:
+            directory = Path(work)
+            queue = asyncio.Queue(maxsize=30)
+            pending = set()
+            stream = media.segments(cfg.stream_url, directory, cfg.clip_duration)
+            last_closed = None
+
+            async def produce():
+                nonlocal last_closed
+                origin = None
+                async for raw, start, end in stream:
+                    last_closed = raw.name
+                    if origin is None:
+                        # shortcut: 按首段落盘时间估算采集时段，需秒级精度时改用摄像头时间戳。
+                        origin = datetime.fromtimestamp(raw.stat().st_mtime - end, timezone.utc)
+                    started = origin + timedelta(seconds=start)
+                    ended = origin + timedelta(seconds=end)
+                    activity_id = self.store.add_activity(started.isoformat(), ended.isoformat())
+                    pending.add(activity_id)
+                    self.status.update(last_started=started.isoformat(), last_capture=ended.isoformat())
+                    if shutil.disk_usage(self.data).free < 1024**3:
+                        raise media.MediaError("可用空间不足 1GB，已暂停采集，请清理磁盘")
+                    duration = end - start
+                    name = f"{uuid.uuid4().hex}-1.jpg"
+                    try:
+                        await media.screenshot(raw, self.images / name, round(duration / 2, 3))
+                        self.store.activity_images(activity_id, [name], [round(duration / 2, 3)])
+                    except (media.MediaError, OSError) as exc:
+                        self.store.update_activity(activity_id, "error", message=self.error_message(exc))
+                        pending.discard(activity_id)
+                        raw.unlink(missing_ok=True)
+                        self.status["last_error"] = self.error_message(exc)
+                        continue
+                    # shortcut: 最多缓存 30 段或 256MiB，持续积压时需降低抽帧率或扩充模型算力。
+                    if queue.full() or sum(p.stat().st_size for p in directory.glob("part-*.mkv")) > 256 * 1024**2:
+                        self.store.update_activity(activity_id, "skipped", message="分析积压，本段仅保留截图，未判断活动")
+                        pending.discard(activity_id)
+                        raw.unlink(missing_ok=True)
+                        self.status["skipped"] += 1
+                    else:
+                        queue.put_nowait((raw, activity_id, started, duration))
+                    self.status["queued"] = queue.qsize()
+                raise media.MediaError("连续视频流已结束，正在重新连接")
+
+            async def consume():
+                while True:
+                    raw, activity_id, started, duration = await queue.get()
+                    self.status["queued"] = queue.qsize()
+                    try:
+                        await self.analyze(cfg, raw, activity_id, started, duration)
+                        self.status["last_finished"] = datetime.now(timezone.utc).isoformat()
+                    except (media.MediaError, ModelError, OSError) as exc:
+                        if self.store.get_activity(activity_id)["status"] == "pending":
+                            self.store.update_activity(activity_id, "error", message=self.error_message(exc))
+                        self.status["last_error"] = self.error_message(exc)
+                    finally:
+                        raw.unlink(missing_ok=True)
+                        pending.discard(activity_id)
+                        if self.store.get_activity(activity_id)["status"] == "pending":
+                            self.store.update_activity(activity_id, "cancelled", message="本段判断已中断")
+
+            self.status["recording"] = True
+            tasks = [asyncio.create_task(produce()), asyncio.create_task(consume())]
+            try:
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    task.result()
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await stream.aclose()
+                last = max(directory.glob("part-*.mkv"), default=None)
+                if last is not None and (last_closed is None or last.name > last_closed):
+                    try:
+                        duration = await media.probe_duration(last)
+                        if duration <= cfg.clip_duration + 2:
+                            ended = datetime.fromtimestamp(last.stat().st_mtime, timezone.utc)
+                            activity_id = self.store.add_activity((ended - timedelta(seconds=duration)).isoformat(), ended.isoformat())
+                            pending.add(activity_id)
+                            name = f"{uuid.uuid4().hex}-1.jpg"
+                            await media.screenshot(last, self.images / name, round(duration / 2, 3))
+                            self.store.activity_images(activity_id, [name], [round(duration / 2, 3)])
+                    except (media.MediaError, OSError):
+                        pass
+                for activity_id in pending:
+                    if self.store.get_activity(activity_id)["status"] == "pending":
+                        self.store.update_activity(activity_id, "cancelled", message="采集停止，本段未完成判断")
+                self.status.update(recording=False, queued=0)
+
+    async def analyze(self, cfg, raw, activity_id, started, duration):
         with tempfile.TemporaryDirectory(prefix="clip-", dir=self.data) as work:
-            raw, fast = Path(work) / "original.mkv", Path(work) / "fast.mp4"
-            self.status["phase"] = "recording"
-            async with self.capture_lock:
-                started = datetime.now(timezone.utc)
-                duration = await media.record(cfg.stream_url, raw, cfg.clip_duration)
+            fast = Path(work) / "fast.mp4"
             self.status["phase"] = "deciding"
-            await media.accelerate(raw, fast, cfg.speed)
-            scores = await self.models.decide(cfg, fast)
+            await media.accelerate(raw, fast, cfg.speed, cfg.sample_fps)
+            result = await self.models.decide(cfg, fast)
+            scores = result["scores"]
+            self.store.update_activity(activity_id, "done", pets=result["pets"])
             self.status["last_scores"] = scores
             candidates = [key for key, score in scores.items() if score >= 0.7]
             if not candidates:
                 self.status["phase"] = "no_event"
                 return
             offsets = [round(duration * fraction, 3) for fraction in (0.1, 0.5, 0.9)]
-            prefix = uuid.uuid4().hex
+            center = self.store.get_activity(activity_id)["images"][0]
+            prefix = center.rsplit("-", 1)[0]
             paths = [self.images / f"{prefix}-{i}.jpg" for i in range(3)]
-            for path, offset in zip(paths, offsets):
-                await media.screenshot(raw, path, offset)
+            for i in (0, 2):
+                await media.screenshot(raw, paths[i], offsets[i])
             eligible = time.time() - self.store.meta("last_review") >= cfg.review_interval
             ids = {key: self.store.add(started.isoformat(), key, scores[key], [p.name for p in paths], offsets,
                                        "reviewing" if eligible else "unreviewed") for key in candidates}

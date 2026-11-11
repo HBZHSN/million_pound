@@ -19,10 +19,18 @@ class Store:
                 frame_offsets TEXT NOT NULL, notification TEXT NOT NULL DEFAULT 'none'
             );
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS activities (
+                id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending', pets TEXT NOT NULL DEFAULT '{}',
+                message TEXT NOT NULL DEFAULT '', images TEXT NOT NULL DEFAULT '[]',
+                frame_offsets TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE INDEX IF NOT EXISTS activity_time ON activities(started_at);
             CREATE INDEX IF NOT EXISTS notification_lookup ON events(type, pet, notification, occurred_at);
             UPDATE events SET status='cancelled', description='服务重启，复核未完成'
                 WHERE status='reviewing';
             UPDATE events SET notification='unknown' WHERE notification='sending';
+            UPDATE activities SET status='cancelled', message='服务重启，本段未完成判断' WHERE status='pending';
         """)
         self.db.commit()
 
@@ -46,6 +54,8 @@ class Store:
         item = dict(row)
         for key in ("images", "frame_offsets"):
             item[key] = json.loads(item[key])
+        if "pets" in item:
+            item["pets"] = json.loads(item["pets"])
         return item
 
     def recent(self, before: int | None = None):
@@ -54,6 +64,32 @@ class Store:
 
     def get(self, event_id: int):
         return self.decode(self.db.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone())
+
+    def add_activity(self, started_at, ended_at):
+        with self.db:
+            row = self.db.execute("INSERT INTO activities(started_at,ended_at) VALUES(?,?)", (started_at, ended_at))
+        return row.lastrowid
+
+    def activity_images(self, activity_id, images, offsets):
+        with self.db:
+            self.db.execute("UPDATE activities SET images=?,frame_offsets=? WHERE id=?",
+                            (json.dumps(images), json.dumps(offsets), activity_id))
+
+    def update_activity(self, activity_id, status, *, pets=None, message=""):
+        with self.db:
+            self.db.execute("UPDATE activities SET status=?,pets=?,message=? WHERE id=?",
+                            (status, json.dumps(pets or {}), message, activity_id))
+
+    def get_activity(self, activity_id):
+        return self.decode(self.db.execute("SELECT * FROM activities WHERE id=?", (activity_id,)).fetchone())
+
+    def activities(self, before=None, start=None, end=None):
+        query, values = "SELECT * FROM activities WHERE id < ?", [before or 2**63 - 1]
+        if start is not None:
+            query += " AND ended_at>? AND started_at<?"
+            values += [start, end]
+        rows = self.db.execute(query + " ORDER BY id DESC LIMIT 50", values).fetchall()
+        return [self.decode(row) for row in rows]
 
     def meta(self, key: str) -> float:
         row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -74,6 +110,7 @@ class Store:
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         with self.db:
             self.db.execute("UPDATE events SET images='[]' WHERE occurred_at<?", (cutoff.isoformat(),))
+            self.db.execute("UPDATE activities SET images='[]' WHERE ended_at<?", (cutoff.isoformat(),))
         for image in images.glob("*.jpg"):
             if image.stat().st_mtime < cutoff.timestamp():
                 image.unlink(missing_ok=True)

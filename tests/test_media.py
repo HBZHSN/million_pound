@@ -43,10 +43,19 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
                 output = await media.command("ffprobe", "-v", "error", "-show_entries", "format=duration",
                                              "-of", "json", str(fast), timeout=10)
                 self.assertLess(float(json.loads(output)["format"]["duration"]), duration)
+                frames = await media.command("ffprobe", "-v", "error", "-count_frames", "-show_entries",
+                                             "stream=nb_read_frames", "-of", "json", str(fast), timeout=10)
+                self.assertEqual(int(json.loads(frames)["streams"][0]["nb_read_frames"]), 6)
                 for i, fraction in enumerate((.1, .5, .9)):
                     target = root / f"frame-{i}.jpg"
                     await media.screenshot(raw, target, duration * fraction)
                     self.assertEqual(target.read_bytes()[:2], b"\xff\xd8")
+                segments = [item async for item in media.segments(
+                    f"http://127.0.0.1:{server.server_port}/source.mp4", root, 2)]
+                self.assertEqual(len(segments), 2)
+                self.assertEqual(segments[0][2], segments[1][1])
+                self.assertAlmostEqual(segments[-1][2], 3, delta=.1)
+                self.assertTrue(all(path.is_file() for path, _, _ in segments))
             finally:
                 await asyncio.to_thread(server.shutdown)
                 server.server_close()

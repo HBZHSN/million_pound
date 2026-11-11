@@ -1,7 +1,7 @@
 {
   "enabled": false,
   "stream_url": "",
-  "sample_interval": 60,
+  "sample_fps": 2,
   "clip_duration": 10,
   "speed": 4,
   "review_interval": 60,

@@ -4,15 +4,16 @@ import re
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from .config import ROOT, Config, Settings
+from .config import ACTIVITIES, BEIJING, ROOT, Config, Settings
 from .media import MediaError
 from .models import ModelError, send_bark
 from .monitor import Monitor
@@ -89,14 +90,15 @@ def create_app(root: Path = ROOT):
         return FileResponse(ASSETS / "login.html")
 
     @app.get("/")
+    @app.get("/activities")
     async def index(request: Request):
         if not request.app.state.security.valid_session(request.cookies.get("pet_session", "")):
             return RedirectResponse("/login", status_code=303)
-        return FileResponse(ASSETS / "index.html")
+        return FileResponse(ASSETS / ("activities.html" if request.url.path == "/activities" else "index.html"))
 
     @app.get("/assets/{name}")
     async def asset(name: str):
-        if name not in {"app.js", "login.js", "style.css"}:
+        if name not in {"app.js", "login.js", "activities.js", "client.js", "style.css"}:
             raise HTTPException(404)
         return FileResponse(ASSETS / name)
 
@@ -152,6 +154,25 @@ def create_app(root: Path = ROOT):
     async def events(request: Request, before: int | None = None):
         items = request.app.state.store.recent(before)
         return {"items": items, "next_before": items[-1]["id"] if len(items) == 50 else None}
+
+    @app.get("/api/activities", dependencies=[Depends(authenticated)])
+    async def activities(request: Request, before: int | None = Query(default=None, ge=1),
+                         day: date | None = None, hour: int | None = Query(default=None, ge=0, le=23)):
+        start = end = None
+        if day is not None or hour is not None:
+            selected = day or datetime.now(BEIJING).date()
+            begin = datetime.combine(selected, datetime.min.time(), tzinfo=BEIJING) + timedelta(hours=hour or 0)
+            finish = begin + (timedelta(hours=1) if hour is not None else timedelta(days=1))
+            start, end = begin.astimezone(timezone.utc).isoformat(), finish.astimezone(timezone.utc).isoformat()
+        items = request.app.state.store.activities(before, start, end)
+        return {"items": items, "next_before": items[-1]["id"] if len(items) == 50 else None, "labels": ACTIVITIES}
+
+    @app.get("/api/activities/{activity_id}/images/{index}", dependencies=[Depends(authenticated)])
+    async def activity_image(activity_id: int, index: int, request: Request):
+        item = request.app.state.store.get_activity(activity_id)
+        if not item or not 0 <= index < len(item["images"]):
+            raise HTTPException(404, "截图已过期或不存在")
+        return image_file(item["images"][index], root / "data" / "images")
 
     @app.get("/api/events/{event_id}/images/{index}", dependencies=[Depends(authenticated)])
     async def event_image(event_id: int, index: int, request: Request):

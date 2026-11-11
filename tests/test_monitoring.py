@@ -38,7 +38,7 @@ class ScheduleTests(unittest.TestCase):
         self.assertTrue(in_schedule([TimeWindow(start="12:00", end="12:00")], at(12)))
 
     def test_config_boundaries(self):
-        for value in ({"clip_duration": 0}, {"speed": 0}, {"enabled": "false"},
+        for value in ({"clip_duration": 0}, {"sample_fps": 0}, {"speed": 0}, {"enabled": "false"},
                       {"stream_url": "file:///etc/passwd"}, {"event_modes": {"eating": "notify"}},
                       {"model_url": "http://example.com/v1/chat/completions"},
                       {"public_url": "https://example.com/path"}, {"bark_url": "https://api.day.app"}):
@@ -58,6 +58,13 @@ class LocalSetup(unittest.TestCase):
 
 
 class LocalTests(LocalSetup):
+    def test_old_interval_config_migrates_without_losing_secrets(self):
+        (self.root / "config.json").write_text(json.dumps({"sample_interval": 60, "model_key": "private-key"}))
+        config = Config(self.root)
+        self.assertEqual(config.current.sample_fps, 2)
+        self.assertEqual(config.current.model_key, "private-key")
+        self.assertNotIn("sample_interval", config.current.model_dump())
+
     def test_password_sessions_and_signed_images(self):
         sec = self.security
         self.assertTrue(sec.verify_password(PASSWORD))
@@ -100,6 +107,32 @@ class LocalTests(LocalSetup):
         self.assertEqual(store.get(event_id)["description"], "进食")
         store.db.close()
 
+    def test_activity_pagination_and_evidence_retention(self):
+        store = Store(self.root / "data")
+        images = self.root / "data" / "images"
+        images.mkdir()
+        old = datetime.now(timezone.utc) - timedelta(days=8)
+        name = "c" * 32 + "-1.jpg"
+        path = images / name
+        path.write_bytes(b"proof")
+        import os
+        os.utime(path, (old.timestamp(), old.timestamp()))
+        for i in range(55):
+            when = old + timedelta(seconds=i * 10)
+            activity_id = store.add_activity(when.isoformat(), (when + timedelta(seconds=10)).isoformat())
+            store.activity_images(activity_id, [name], [5])
+            store.update_activity(activity_id, "done", pets={"dog": {"activity": "resting", "confidence": .9}})
+        first = store.activities()
+        second = store.activities(before=first[-1]["id"])
+        self.assertEqual((len(first), len(second)), (50, 5))
+        self.assertFalse({row["id"] for row in first} & {row["id"] for row in second})
+        store.cleanup(images, 7)
+        self.assertFalse(path.exists())
+        activity = store.get_activity(activity_id)
+        self.assertEqual(activity["images"], [])
+        self.assertEqual(activity["pets"]["dog"]["activity"], "resting")
+        store.db.close()
+
 
 class WebTests(LocalSetup):
     def setUp(self):
@@ -119,7 +152,7 @@ class WebTests(LocalSetup):
         return {"X-CSRF-Token": self.client.get("/api/session").json()["csrf"]}
 
     def test_authentication_secret_redaction_csrf_and_restore(self):
-        for path in ("/api/config", "/api/events", "/api/status", "/api/preview"):
+        for path in ("/api/config", "/api/events", "/api/activities", "/api/status", "/api/preview"):
             self.assertEqual(self.client.get(path).status_code, 401)
         self.assertEqual(self.client.get("/", follow_redirects=False).status_code, 303)
         self.assertEqual(self.client.get("/docs").status_code, 404)
@@ -129,10 +162,10 @@ class WebTests(LocalSetup):
         for secret in ("private-model-key", "private-bark-key", "private-camera-password"):
             self.assertNotIn(secret, response.text)
         self.assertTrue(response.json()["stream_url_configured"])
-        self.assertEqual(self.client.put("/api/config", json={"sample_interval": 90}).status_code, 403)
-        self.assertEqual(self.client.put("/api/config", json={"sample_interval": 90}, headers=headers).status_code, 200)
+        self.assertEqual(self.client.put("/api/config", json={"clip_duration": 20}).status_code, 403)
+        self.assertEqual(self.client.put("/api/config", json={"clip_duration": 20}, headers=headers).status_code, 200)
         restored = Config(self.root).current
-        self.assertEqual(restored.sample_interval, 90)
+        self.assertEqual(restored.clip_duration, 20)
         self.assertEqual(restored.model_key, "private-model-key")
         self.assertEqual(self.client.put("/api/config", json={"enabled": "false"}, headers=headers).status_code, 422)
         self.assertEqual(self.client.put("/api/config", json={"enabled": True}, headers={**headers, "Origin": "https://evil.example"}).status_code, 403)
@@ -165,6 +198,30 @@ class WebTests(LocalSetup):
             self.assertEqual(self.client.post("/api/login", json={"password": "wrong"}).status_code, 401)
         self.assertEqual(self.client.post("/api/login", json={"password": PASSWORD}).status_code, 429)
 
+    def test_activity_page_images_and_beijing_midnight_filter(self):
+        self.assertEqual(self.client.get("/activities", follow_redirects=False).status_code, 303)
+        store = Store(self.root / "data")
+        start = datetime.now(timezone.utc).replace(hour=15, minute=59, second=55, microsecond=0)
+        end = start + timedelta(seconds=10)
+        activity_id = store.add_activity(start.isoformat(), end.isoformat())
+        name = "b" * 32 + "-1.jpg"
+        (self.root / "data" / "images" / name).write_bytes(b"activity-image")
+        store.activity_images(activity_id, [name], [5])
+        store.update_activity(activity_id, "done", pets={"dog": {"activity": "sleeping", "confidence": .9},
+                                                       "cat": {"activity": "not_visible", "confidence": .95}})
+        store.db.close()
+        private = f"/api/activities/{activity_id}/images/0"
+        self.assertEqual(self.client.get(private).status_code, 401)
+        self.login()
+        self.assertEqual(self.client.get("/activities").status_code, 200)
+        self.assertEqual(self.client.get(private).content, b"activity-image")
+        beijing_day = (end + timedelta(hours=8)).date().isoformat()
+        rows = self.client.get("/api/activities", params={"day": beijing_day, "hour": 0}).json()["items"]
+        self.assertEqual([r["id"] for r in rows], [activity_id])
+        self.assertEqual(rows[0]["pets"]["cat"]["activity"], "not_visible")
+        self.assertEqual(self.client.get("/api/activities", params={"day": beijing_day, "hour": 1}).json()["items"], [])
+        self.assertEqual(self.client.get("/api/activities?hour=24").status_code, 422)
+
 
 class ModelTests(unittest.IsolatedAsyncioTestCase):
     async def test_model_payloads_and_strict_review(self):
@@ -176,19 +233,24 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
                 payload = json.loads(request.content)
                 calls.append((request.url.path, payload))
                 if request.url.path.endswith("systemone"):
-                    return httpx.Response(200, json={"answers": {key: {"noul": .1} for key in ("eating", "destruction", "toileting")}})
+                    answers = {key: {"noul": .1} for key in ("eating", "destruction", "toileting")}
+                    answers.update({"dog": {"choice": "sleeping", "probabilities": {"sleeping": .9}},
+                                    "cat": {"choice": "not_visible", "probabilities": {"not_visible": .5}}})
+                    return httpx.Response(200, json={"answers": answers})
                 return httpx.Response(200, json={"choices": [{"message": {"content": '```json\n{"events":[{"type":"eating","confirmed":false,"pet":"unknown","description":"证据不足"}]}\n```'}}]})
             async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
                 models = Models(client)
                 cfg = Settings(model_url="http://model.local/v1")
-                await models.decide(cfg, path)
+                decision = await models.decide(cfg, path)
+                self.assertEqual(decision["pets"]["dog"]["activity"], "sleeping")
+                self.assertEqual(decision["pets"]["cat"]["activity"], "uncertain")
                 result = await models.review(cfg, ["eating"], [path], [1])
                 self.assertFalse(result[0].confirmed)
                 with self.assertRaises(ModelError):
                     await models.review(cfg, ["destruction"], [path], [1])
             self.assertEqual(calls[0][0], "/v1/systemone")
             self.assertTrue(calls[0][1]["videos"][0].startswith("data:video/mp4;base64,"))
-            self.assertEqual(set(calls[0][1]["questions"]), {"eating", "destruction", "toileting"})
+            self.assertEqual(set(calls[0][1]["questions"]), {"eating", "destruction", "toileting", "dog", "cat"})
             self.assertEqual(calls[1][1]["model"], "swift-1.5")
 
     async def test_invalid_probability_is_an_error(self):
@@ -223,17 +285,16 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store = Store(self.root / "data")
         self.client = httpx.AsyncClient(trust_env=False)
         self.monitor = Monitor(self.config, self.store, Security(self.root / "data"), self.root / "data", self.client)
-        async def record(source, target, seconds):
-            target.write_bytes(b"original")
-            return float(seconds)
-        async def generate(source, target, parameter):
+        async def generate(source, target, parameter, *extra):
             target.write_bytes(b"fixture")
-        self.patches = [patch("million_pound.media.record", side_effect=record),
-                        patch("million_pound.media.accelerate", side_effect=generate),
+        self.patches = [patch("million_pound.media.accelerate", side_effect=generate),
                         patch("million_pound.media.screenshot", side_effect=generate),
                         patch("million_pound.monitor.send_bark", new_callable=AsyncMock)]
         self.mocks = [p.start() for p in self.patches]
-        self.monitor.models.decide = AsyncMock(return_value={"eating": .9, "destruction": .9, "toileting": .1})
+        self.monitor.models.decide = AsyncMock(return_value={
+            "scores": {"eating": .9, "destruction": .9, "toileting": .1},
+            "pets": {"dog": {"activity": "eating", "confidence": .9}, "cat": {"activity": "playing", "confidence": .9}},
+        })
         self.monitor.models.review = AsyncMock(return_value=[
             ReviewEvent(type="eating", confirmed=True, pet="dog", description="正在进食"),
             ReviewEvent(type="destruction", confirmed=True, pet="cat", description="正在抓坏沙发"),
@@ -246,36 +307,51 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         self.tmp.cleanup()
 
+    async def analyze(self, cfg=None):
+        started = datetime.now(timezone.utc)
+        activity_id = self.store.add_activity(started.isoformat(), (started + timedelta(seconds=10)).isoformat())
+        name = f"{activity_id:032x}-1.jpg"
+        (self.monitor.images / name).write_bytes(b"evidence")
+        self.store.activity_images(activity_id, [name], [5])
+        raw = self.root / f"raw-{activity_id}.mkv"
+        raw.write_bytes(b"original")
+        await self.monitor.analyze(cfg or self.config.current, raw, activity_id, started, 10)
+        return activity_id
+
     async def test_record_mode_notification_and_review_interval(self):
-        await self.monitor.cycle(self.config.current)
+        await self.analyze()
         rows = self.store.recent()
         self.assertEqual({r["type"]: r["notification"] for r in rows}, {"eating": "record_only", "destruction": "sent"})
         self.mocks[-1].assert_awaited_once()
         image_url = self.mocks[-1].call_args.args[-1]
         self.assertTrue(image_url.startswith("https://home.local/shared/"))
         self.assertEqual(rows[0]["frame_offsets"], [1.0, 5.0, 9.0])
-        await self.monitor.cycle(self.config.current)
+        await self.analyze()
         self.assertEqual({r["status"] for r in self.store.recent()[:2]}, {"unreviewed"})
         self.monitor.models.review.assert_awaited_once()
         self.assertFalse(list((self.root / "data").glob("clip-*")))
 
     async def test_continuous_event_is_not_notified_twice(self):
         cfg = self.config.current.model_copy(update={"review_interval": 0, "public_url": ""})
-        await self.monitor.cycle(cfg)
-        await self.monitor.cycle(cfg)
+        await self.analyze(cfg)
+        await self.analyze(cfg)
         self.mocks[-1].assert_awaited_once()
         self.assertEqual(self.store.recent()[0]["notification"], "deduplicated")
 
     async def test_no_candidate_does_not_call_review(self):
-        self.monitor.models.decide.return_value = {"eating": .1, "destruction": .2, "toileting": .3}
-        await self.monitor.cycle(self.config.current)
+        self.monitor.models.decide.return_value["scores"] = {"eating": .1, "destruction": .2, "toileting": .3}
+        activity_id = await self.analyze()
         self.monitor.models.review.assert_not_awaited()
         self.assertEqual(self.store.recent(), [])
+        activity = self.store.get_activity(activity_id)
+        self.assertEqual(activity["status"], "done")
+        self.assertEqual(activity["pets"]["dog"]["activity"], "eating")
+        self.assertEqual(len(activity["images"]), 1)
 
     async def test_failed_review_is_recorded_without_notification(self):
         self.monitor.models.review.side_effect = ModelError("模型失败")
         with self.assertRaises(ModelError):
-            await self.monitor.cycle(self.config.current)
+            await self.analyze()
         self.assertEqual({r["status"] for r in self.store.recent()}, {"review_error"})
         self.assertGreater(self.store.meta("last_review"), 0)
         self.mocks[-1].assert_not_awaited()
@@ -286,7 +362,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             entered.set()
             await asyncio.Event().wait()
         self.monitor.models.review.side_effect = wait
-        task = asyncio.create_task(self.monitor.cycle(self.config.current))
+        task = asyncio.create_task(self.analyze())
         await asyncio.wait_for(entered.wait(), 2)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
@@ -294,6 +370,108 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({r["status"] for r in self.store.recent()}, {"cancelled"})
         self.assertFalse(list((self.root / "data").glob("clip-*")))
         self.mocks[-1].assert_not_awaited()
+
+    async def test_capture_continues_during_model_wait_and_cleans_pending(self):
+        deciding, produced = asyncio.Event(), asyncio.Event()
+        async def decision(*args):
+            deciding.set()
+            await asyncio.Event().wait()
+        async def source(url, directory, seconds):
+            for i in range(2):
+                raw = directory / f"part-{i:06d}.mkv"
+                raw.write_bytes(b"raw")
+                yield raw, i * 10, (i + 1) * 10
+                if i == 0:
+                    await deciding.wait()
+            produced.set()
+            await asyncio.Event().wait()
+        self.monitor.models.decide.side_effect = decision
+        with patch("million_pound.media.segments", source):
+            task = asyncio.create_task(self.monitor.capture(self.config.current))
+            await asyncio.wait_for(produced.wait(), 2)
+            self.assertEqual(len(self.store.activities()), 2)
+            self.assertEqual(self.monitor.status["queued"], 1)
+            self.assertTrue(all(len(row["images"]) == 1 for row in self.store.activities()))
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        rows = self.store.activities()
+        self.assertEqual({r["status"] for r in rows}, {"cancelled"})
+        self.assertEqual(rows[1]["ended_at"], rows[0]["started_at"])
+        self.assertFalse(list((self.root / "data").glob("capture-*")))
+
+    async def test_backlog_keeps_evidence_without_inventing_activity(self):
+        deciding, produced = asyncio.Event(), asyncio.Event()
+        async def decision(*args):
+            deciding.set()
+            await asyncio.Event().wait()
+        async def source(url, directory, seconds):
+            for i in range(35):
+                raw = directory / f"part-{i:06d}.mkv"
+                raw.write_bytes(b"raw")
+                yield raw, i * 10, (i + 1) * 10
+                if i == 0:
+                    await deciding.wait()
+            produced.set()
+            await asyncio.Event().wait()
+        self.monitor.models.decide.side_effect = decision
+        with patch("million_pound.media.segments", source):
+            task = asyncio.create_task(self.monitor.capture(self.config.current))
+            await asyncio.wait_for(produced.wait(), 2)
+            skipped = [row for row in self.store.activities() if row["status"] == "skipped"]
+            self.assertEqual(len(skipped), 4)
+            self.assertTrue(all(row["images"] and row["pets"] == {} for row in skipped))
+            self.assertEqual(self.monitor.status["queued"], 30)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+    async def test_pause_waits_for_cleanup_instead_of_cancelling_it_twice(self):
+        entered, cleaning, release, finished = (asyncio.Event() for _ in range(4))
+        async def capture(cfg):
+            self.monitor.status["recording"] = True
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+                self.monitor.status["recording"] = False
+                finished.set()
+        self.monitor.capture = capture
+        self.monitor.task = asyncio.create_task(self.monitor.run())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            self.config.save(self.config.current.model_copy(update={"enabled": False}))
+            self.monitor.changed()
+            await asyncio.wait_for(cleaning.wait(), 2)
+            await asyncio.sleep(.02)
+            release.set()
+            await asyncio.wait_for(finished.wait(), 2)
+        finally:
+            release.set()
+            await self.monitor.close()
+        self.assertFalse(self.monitor.status["recording"])
+
+    async def test_unfinished_segment_keeps_a_picture_when_stopping(self):
+        entered = asyncio.Event()
+        async def source(url, directory, seconds):
+            raw = directory / "part-000000.mkv"
+            raw.write_bytes(b"partial-video")
+            entered.set()
+            await asyncio.Event().wait()
+            yield raw, 0, 3
+        with patch("million_pound.media.segments", source), \
+                patch("million_pound.media.probe_duration", new_callable=AsyncMock, return_value=3):
+            task = asyncio.create_task(self.monitor.capture(self.config.current))
+            await asyncio.wait_for(entered.wait(), 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        row = self.store.activities()[0]
+        self.assertEqual(row["status"], "cancelled")
+        self.assertEqual(len(row["images"]), 1)
+        self.assertEqual(row["pets"], {})
 
 
 if __name__ == "__main__":

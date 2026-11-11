@@ -8,7 +8,7 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 
-from .config import EVENTS, Settings
+from .config import ACTIVITIES, EVENTS, Settings
 
 
 class ModelError(RuntimeError):
@@ -63,21 +63,48 @@ class Models:
         payload = {
             "model": "d3",
             "state": f"家庭宠物监控，一只拉布拉多和一只缅因猫。这是 {settings.speed} 倍速视频。"
-                     "只根据可见画面判断以下行为是否实际发生，不凭动物品种或静止姿势推测。",
+                     f"从原视频每秒抽取 {settings.sample_fps} 帧。"
+                     "只根据可见画面判断，不凭动物品种推测，区分拉布拉多与缅因猫。",
             "questions": {key: {"type": "noul", "instructions": text + "，是否发生？",
                                 "criteria": {"true": "明确发生", "false": "未发生或证据不足"}}
                           for key, text in descriptions.items()},
             "videos": [data_url(video, "video/mp4")],
         }
+        criteria = {
+            "sleeping": "该宠物卧躺、闭眼并持续静止，明确在睡觉；不能仅凭蹲坐或单帧静止判断睡觉",
+            "drinking": "该宠物正在水碗或饮水器前实际喝水，不是闻嗅或进食",
+            "eating": "该宠物正在食盆或食物前实际进食，不是路过、饮水或闻嗅",
+            "walking": "该宠物在画面中走动、散步或跑动",
+            "playing": "该宠物正在玩玩具、与另一只宠物互动或嬉戏",
+            "resting": "该宠物坐着、站着或卧躺休息，没有明确睡着或其他行为",
+            "not_visible": "整段视频中均看不到该宠物，不是仅短暂被遮挡或难以辨认",
+            "other": "能看见该宠物，正在进行梳理、抓痒等上述类别之外的活动",
+            "uncertain": "画面遮挡、太暗、身份或行为证据不足，无法可靠判断",
+        }
+        for pet, name in (("dog", "拉布拉多犬"), ("cat", "缅因猫")):
+            payload["questions"][pet] = {
+                "type": "choice", "instructions": f"这段视频里{name}最主要的活动是什么？"
+                "请选择一个最符合可见证据的类别。不清楚时选 uncertain，不要把看不清等同于未入镜。",
+                "criteria": criteria,
+            }
         result = await post_json(self.client, model_endpoint(settings, "systemone"), payload, key=settings.model_key)
         try:
             scores = {key: result["answers"][key]["noul"] for key in EVENTS}
             if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1
                    for v in scores.values()):
                 raise ValueError
-            return scores
+            pets = {}
+            for pet in ("dog", "cat"):
+                answer = result["answers"][pet]
+                activity = answer["choice"]
+                confidence = answer["probabilities"][activity]
+                if activity not in ACTIVITIES or isinstance(confidence, bool) or not isinstance(confidence, (int, float)) \
+                        or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                    raise ValueError
+                pets[pet] = {"activity": activity if confidence >= 0.6 else "uncertain", "confidence": confidence}
+            return {"scores": scores, "pets": pets}
         except (KeyError, TypeError, ValueError):
-            raise ModelError("d3 返回的事件概率格式无效") from None
+            raise ModelError("d3 返回的活动或事件判断格式无效") from None
 
     async def review(self, settings: Settings, candidates: list[str], images: list[Path], offsets: list[float]):
         prompt = (

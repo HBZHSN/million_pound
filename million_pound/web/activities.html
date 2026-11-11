@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>活动时间线 · Million Pound</title>
+  <link rel="stylesheet" href="/assets/style.css"><script src="/assets/activities.js" type="module"></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">M</span><span>Million Pound<small>家庭宠物守护</small></span></a>
+  <nav aria-label="主导航"><a href="/activities" aria-current="page">活动时间线</a><a href="/#events">事件</a><a href="/#settings">设置</a><button id="logout" class="quiet">退出</button></nav>
+</header>
+<main class="shell">
+  <section class="hero">
+    <div><p class="eyebrow">A DAY IN THEIR LIFE</p><h1>它们的日常，按时间看。</h1><p class="muted">每段录像分别判断两只宠物的主要活动，留下截图，方便你核对。</p></div>
+    <a class="button-link secondary" href="/#settings">采集设置</a>
+  </section>
+  <div id="message" class="notice" role="status" aria-live="polite" hidden></div>
+  <section class="activity-summaries" aria-label="最近一次活动判断">
+    <article class="card pet-summary" data-pet="dog"><p class="eyebrow">拉布拉多</p><h2 class="pet-state">暂无记录</h2><p class="pet-confidence muted">等待第一段判断</p></article>
+    <article class="card pet-summary" data-pet="cat"><p class="eyebrow">缅因猫</p><h2 class="pet-state">暂无记录</h2><p class="pet-confidence muted">等待第一段判断</p></article>
+  </section>
+  <p id="summary-time" class="footnote">显示所选时段内最近完成的判断。</p>
+  <section class="section" aria-labelledby="timeline-heading">
+    <div class="section-heading"><div><p class="eyebrow">MOMENT BY MOMENT</p><h2 id="timeline-heading">活动时间线</h2></div><span id="capture-status" class="muted" aria-live="polite">正在连接…</span></div>
+    <form id="timeline-filters" class="card timeline-filters">
+      <label>日期 · 北京时间<input id="day" type="date" required></label>
+      <label>查看时段<select id="hour"><option value="">全天</option></select></label>
+      <label>宠物<select id="pet"><option value="">两只都看</option><option value="dog">拉布拉多</option><option value="cat">缅因猫</option></select></label>
+      <button id="refresh-activities" type="submit" class="secondary">刷新记录</button>
+    </form>
+    <p class="footnote timeline-note">按采集时段展示，时间从近到远，可能有几秒传输与编码延迟；可核对截图中的摄像头时钟。“未入镜”与“判断不清”分别记录，中断期间不补猜活动。</p>
+    <div id="activity-list" class="activity-list"><p class="empty">正在读取活动记录…</p></div>
+    <button id="older-activities" class="secondary" hidden>更早的记录</button>
+  </section>
+  <footer>Million Pound · 活动由 d3 根据抽帧视频判断。截图是对应时段的画面，请结合实际情况核对。</footer>
+</main>
+<template id="activity-template">
+  <article class="card activity">
+    <div class="event-header"><div class="activity-range"><time class="range-start"></time><span aria-hidden="true"> — </span><time class="range-end"></time></div><span class="badge"></span></div>
+    <div class="activity-pets">
+      <div class="activity-pet" data-pet="dog"><span class="pet-name">拉布拉多</span><strong class="activity-label"></strong><small class="activity-confidence"></small></div>
+      <div class="activity-pet" data-pet="cat"><span class="pet-name">缅因猫</span><strong class="activity-label"></strong><small class="activity-confidence"></small></div>
+    </div>
+    <p class="activity-message muted" hidden></p>
+    <a class="activity-photo" target="_blank" rel="noopener" hidden><img loading="lazy" alt=""><span class="photo-caption"></span></a>
+    <p class="missing-evidence muted" hidden></p>
+  </article>
+</template>
+</body></html>
