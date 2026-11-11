@@ -1,0 +1,7 @@
+services:
+  xiaomi-camera:
+    image: ghcr.io/willjayyyy/addon-xiaomi-camera-bridge:latest
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./camera-data:/data

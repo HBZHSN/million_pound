@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.env
+config.json
+data/
+camera-data/
+需求.txt
+*.log
