@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ACTIVITIES, ROOT, write_private
-from .models import PET_NAMES, activity_decision, previous_pets
+from .models import PET_NAMES, ModelError, activity_decision, choice_answer, previous_pets
 
 
 def recalculate(data: Path):
@@ -30,14 +30,14 @@ def recalculate(data: Path):
         )), None)
         if first is None:
             raise ValueError("没有可重算的入镜记录，未删除或修改活动")
-        changes, previous = [], None
+        changes, history = [], []
         activity_changes = 0
         for row in rows:
             if row["id"] < first:
                 continue
             pets = {pet: dict(value) for pet, value in row["pets"].items()}
             if row["status"] == "done":
-                prior = previous_pets(previous, datetime.fromisoformat(row["started_at"]))
+                prior = previous_pets(reversed(history), datetime.fromisoformat(row["started_at"]))
                 for pet, value in pets.items():
                     if not value.get("identity_verified") or value.get("visibility") != "present" or "proposed_activity" not in value:
                         continue
@@ -45,13 +45,20 @@ def recalculate(data: Path):
                     if activity not in ACTIVITIES or isinstance(confidence, bool) or not isinstance(confidence, (int, float)) \
                             or not math.isfinite(confidence) or not 0 <= confidence <= 1:
                         raise ValueError(f"活动 {row['id']} 的原始判断无效，未写入重算结果")
-                    value.update(activity_decision(activity, confidence, prior.get(pet, {})))
+                    if "probabilities" in value:
+                        try:
+                            _, original_score = choice_answer({"answers": {pet: {"choice": activity, "probabilities": value["probabilities"]}}}, pet, ACTIVITIES)
+                        except ModelError:
+                            raise ValueError(f"活动 {row['id']} 的候选分数无效，未写入重算结果") from None
+                        if original_score != confidence:
+                            raise ValueError(f"活动 {row['id']} 的候选分数与原始分数不符，未写入重算结果")
+                    value.update(activity_decision(activity, confidence, prior.get(pet, {}), value.get("probabilities")))
                     if activity == "not_visible":
                         value.update(activity="uncertain", identity_verified=False)
                 if pets != row["pets"]:
                     activity_changes += any(pets[pet].get("activity") != value.get("activity") for pet, value in row["pets"].items())
                     changes.append({"id": row["id"], "before": row["pets"], "after": pets})
-            previous = {**row, "pets": pets}
+            history.append({**row, "pets": pets})
         summary = {"backup": str(backup.resolve()), "audit": str((directory / "changes.json").resolve()),
                    "first_retained_id": first, "deleted_records": sum(row["id"] < first for row in rows),
                    "recalculated_records": sum(row["id"] >= first and row["status"] == "done" for row in rows),

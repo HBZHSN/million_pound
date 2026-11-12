@@ -13,7 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from .config import ACTIVITIES, BEIJING, ROOT, Config, Settings
+from .config import ACTIVITIES, BEIJING, EVENTS, ROOT, Config, Settings
 from .media import MediaError
 from .models import ModelError, send_bark
 from .monitor import Monitor
@@ -27,6 +27,11 @@ IMAGE_NAME = re.compile(r"^[0-9a-f]{32}-[0-2]\.jpg$")
 
 class Login(BaseModel):
     password: str = Field(min_length=1, max_length=256)
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=11, max_length=256)
 
 
 def create_app(root: Path = ROOT):
@@ -48,6 +53,7 @@ def create_app(root: Path = ROOT):
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     failures = deque(maxlen=5)
+    password_lock = asyncio.Lock()
 
     def same_origin(request):
         origin = request.headers.get("origin")
@@ -65,6 +71,15 @@ def create_app(root: Path = ROOT):
             if not hmac.compare_digest(csrf.encode(), request.app.state.security.csrf(token).encode()):
                 raise HTTPException(403, "页面已过期，请刷新后重试")
         return token
+
+    async def check_password(request, password):
+        if len(failures) == 5 and time.monotonic() - failures[0] < 60:
+            raise HTTPException(429, "尝试过于频繁，请一分钟后重试")
+        if not await asyncio.to_thread(request.app.state.security.verify_password, password):
+            failures.append(time.monotonic())
+            return False
+        failures.clear()
+        return True
 
     @app.middleware("http")
     async def headers(request, call_next):
@@ -91,10 +106,11 @@ def create_app(root: Path = ROOT):
 
     @app.get("/")
     @app.get("/activities")
+    @app.get("/settings")
     async def index(request: Request):
         if not request.app.state.security.valid_session(request.cookies.get("pet_session", "")):
             return RedirectResponse("/login", status_code=303)
-        return FileResponse(ASSETS / ("activities.html" if request.url.path == "/activities" else "index.html"))
+        return FileResponse(ASSETS / ("index.html" if request.url.path == "/settings" else "activities.html"))
 
     @app.get("/assets/{name}")
     async def asset(name: str):
@@ -105,16 +121,26 @@ def create_app(root: Path = ROOT):
     @app.post("/api/login")
     async def login(body: Login, request: Request):
         same_origin(request)
-        if len(failures) == 5 and time.monotonic() - failures[0] < 60:
-            raise HTTPException(429, "尝试过于频繁，请一分钟后重试")
-        if not await asyncio.to_thread(request.app.state.security.verify_password, body.password):
-            failures.append(time.monotonic())
-            raise HTTPException(401, "密码错误")
-        failures.clear()
-        response = JSONResponse({"ok": True})
-        response.set_cookie("pet_session", request.app.state.security.session(), max_age=43200,
-                            httponly=True, secure=request.url.scheme == "https", samesite="strict")
-        return response
+        async with password_lock:
+            if not await check_password(request, body.password):
+                raise HTTPException(401, "密码错误")
+            response = JSONResponse({"ok": True})
+            response.set_cookie("pet_session", request.app.state.security.session(), max_age=43200,
+                                httponly=True, secure=request.url.scheme == "https", samesite="strict")
+            return response
+
+    @app.put("/api/password", dependencies=[Depends(authenticated)])
+    async def change_password(body: PasswordChange, request: Request):
+        async with password_lock:
+            if not await check_password(request, body.current_password):
+                raise HTTPException(400, "当前密码错误")
+            try:
+                await asyncio.to_thread(request.app.state.security.change_password, body.new_password)
+            except OSError:
+                raise HTTPException(500, "密码保存失败，请检查磁盘和权限") from None
+            response = JSONResponse({"ok": True})
+            response.delete_cookie("pet_session", httponly=True, samesite="strict")
+            return response
 
     @app.post("/api/logout", dependencies=[Depends(authenticated)])
     async def logout():
@@ -157,6 +183,7 @@ def create_app(root: Path = ROOT):
 
     @app.get("/api/activities", dependencies=[Depends(authenticated)])
     async def activities(request: Request, before: int | None = Query(default=None, ge=1),
+                         limit: int = Query(default=50, ge=1, le=1000),
                          day: date | None = None, hour: int | None = Query(default=None, ge=0, le=23)):
         start = end = None
         if day is not None or hour is not None:
@@ -164,8 +191,25 @@ def create_app(root: Path = ROOT):
             begin = datetime.combine(selected, datetime.min.time(), tzinfo=BEIJING) + timedelta(hours=hour or 0)
             finish = begin + (timedelta(hours=1) if hour is not None else timedelta(days=1))
             start, end = begin.astimezone(timezone.utc).isoformat(), finish.astimezone(timezone.utc).isoformat()
-        items = request.app.state.store.activities(before, start, end)
-        return {"items": items, "next_before": items[-1]["id"] if len(items) == 50 else None, "labels": ACTIVITIES}
+        items = request.app.state.store.activities(before, start, end, limit)
+        events = request.app.state.store.activity_events(items)
+        for item in items:
+            item["events"] = events.get(item["started_at"], [])
+            item["video"] = f"/api/activities/{item['id']}/video" if activity_video_path(item) else None
+        return {"items": items, "next_before": items[-1]["id"] if len(items) == limit else None, "labels": {**ACTIVITIES, **EVENTS}}
+
+    def activity_video_path(item):
+        if item and item["images"] and IMAGE_NAME.fullmatch(item["images"][0]):
+            path = (root / "data" / "images" / item["images"][0]).with_suffix(".mp4")
+            if path.is_file():
+                return path
+
+    @app.get("/api/activities/{activity_id}/video", dependencies=[Depends(authenticated)])
+    async def activity_video(activity_id: int, request: Request):
+        path = activity_video_path(request.app.state.store.get_activity(activity_id))
+        if path is None:
+            raise HTTPException(404, "录像已过期或不存在")
+        return FileResponse(path, media_type="video/mp4")
 
     @app.get("/api/activities/{activity_id}/images/{index}", dependencies=[Depends(authenticated)])
     async def activity_image(activity_id: int, index: int, request: Request):

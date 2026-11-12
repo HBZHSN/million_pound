@@ -40,10 +40,10 @@ class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool = False
     stream_url: str = Field(default="", max_length=2048)
-    clip_duration: int = Field(default=10, ge=2, le=120)
+    clip_duration: int = Field(default=60, ge=2, le=120)
     sample_fps: float = Field(default=2, ge=0.5, le=5)
-    speed: float = Field(default=4, ge=1, le=16)
-    review_interval: int = Field(default=60, ge=0, le=86400)
+    speed: float = Field(default=6, ge=1, le=16)
+    review_interval: int = Field(default=0, ge=0, le=86400)
     windows: list[TimeWindow] = Field(default_factory=list, max_length=24)
     event_modes: dict[str, Literal["notify", "record"]] = Field(
         default_factory=lambda: {"eating": "record", "destruction": "notify", "toileting": "notify"}

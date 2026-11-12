@@ -90,7 +90,7 @@ class RecalculationTests(unittest.TestCase):
             self.assertTrue(value["continued"])
         self.assertEqual(self.store.get_activity(large_overlap)["pets"]["dog"]["activity"], "uncertain")
 
-    def test_gaps_failed_records_and_absence_break_continuation(self):
+    def test_short_hidden_gaps_keep_state_but_long_gaps_reset_it(self):
         self.add(0, observation())
         after_gap = self.add(20, observation("uncertain", .2))
         self.add(30, observation())
@@ -99,18 +99,61 @@ class RecalculationTests(unittest.TestCase):
         self.add(60, observation())
         absent = observation("not_visible", .9)
         absent["dog"].update(visibility="absent", identity_verified=False)
-        self.add(70, absent)
+        absent_id = self.add(70, absent)
         after_absence = self.add(80, observation("uncertain", .2))
+        long_gap = self.add(160, observation("uncertain", .2))
         recalculate(self.data)
         for activity_id in (after_gap, after_error, after_absence):
             value = self.store.get_activity(activity_id)["pets"]["dog"]
-            self.assertEqual(value["activity"], "uncertain")
-            self.assertFalse(value["continued"])
+            self.assertEqual(value["activity"], "sleeping")
+            self.assertTrue(value["continued"])
+        self.assertEqual(self.store.get_activity(long_gap)["pets"]["dog"]["activity"], "uncertain")
+        self.assertEqual(self.store.get_activity(absent_id)["pets"]["dog"]["activity"], "not_visible")
 
     def test_invalid_saved_scores_do_not_partially_delete_or_update(self):
         self.add(0, {"dog": {"activity": "sleeping", "confidence": .9}})
         self.add(10, observation())
         self.add(20, observation("uncertain", "invalid"))
+        original = self.rows()
+        with self.assertRaises(ValueError):
+            recalculate(self.data)
+        self.assertEqual(self.rows(), original)
+
+    def test_uncertain_candidate_scores_are_preserved_without_promoting_them(self):
+        pets = observation("uncertain", .8, "uncertain")
+        pets["dog"]["probabilities"] = {"uncertain": .8, "walking": .15, "sleeping": .05}
+        activity_id = self.add(0, pets)
+        recalculate(self.data)
+        decision = self.store.get_activity(activity_id)["pets"]["dog"]
+        self.assertEqual(decision["activity"], "uncertain")
+        self.assertEqual(decision["proposed_activity"], "uncertain")
+        self.assertEqual(decision["confidence"], .8)
+        self.assertEqual(decision["probabilities"], pets["dog"]["probabilities"])
+
+    def test_aliases_and_same_uncertain_candidate_keep_confirmed_state(self):
+        self.add(0, observation())
+        rest = self.add(10, observation("uncertain", .1, "resting"))
+        uncertain = observation("uncertain", .8, "uncertain")
+        uncertain["dog"]["probabilities"] = {"uncertain": .8, "sleeping": .2}
+        fallback = self.add(20, uncertain)
+        self.add(30, observation("eating", .9, "eating"))
+        drink = self.add(40, observation("uncertain", .1, "drinking"))
+        different = self.add(50, observation("uncertain", .1, "walking"))
+        result = recalculate(self.data)
+        self.assertTrue(Path(result["backup"]).is_file())
+        for activity_id, activity, raw in ((rest, "sleeping", "resting"), (fallback, "sleeping", "uncertain"), (drink, "eating", "drinking")):
+            decision = self.store.get_activity(activity_id)["pets"]["dog"]
+            self.assertEqual(decision["activity"], activity)
+            self.assertEqual(decision["proposed_activity"], raw)
+            self.assertTrue(decision["continued"])
+        self.assertEqual(self.store.get_activity(fallback)["pets"]["dog"]["probabilities"], uncertain["dog"]["probabilities"])
+        self.assertEqual(self.store.get_activity(different)["pets"]["dog"]["activity"], "uncertain")
+
+    def test_invalid_candidate_scores_do_not_change_history(self):
+        self.add(0, observation())
+        invalid = observation("uncertain", .8, "uncertain")
+        invalid["dog"]["probabilities"] = {"uncertain": .8, "walking": float("nan")}
+        self.add(10, invalid)
         original = self.rows()
         with self.assertRaises(ValueError):
             recalculate(self.data)

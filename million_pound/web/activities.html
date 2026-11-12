@@ -22,43 +22,43 @@
 </defs></svg>
 <header class="topbar">
   <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">M</span><span>Million Pound<small>百万与英镑的家庭守护</small></span></a>
-  <nav aria-label="主导航"><a href="/activities" aria-current="page">活动时间线</a><a href="/#events">事件</a><a href="/#settings">设置</a><button id="logout" class="quiet">退出</button></nav>
+  <nav aria-label="主导航"><a href="/activities" aria-current="page">活动时间线</a><a href="/settings#events">事件</a><a href="/settings#settings">设置</a><button id="logout" class="quiet">退出</button></nav>
 </header>
 <main class="diary-shell">
   <section class="diary-intro">
     <p class="eyebrow">THEIR LITTLE EVERYDAY</p><h1>百万和英镑的一天</h1>
-    <p class="diary-subtitle">相同活动已合并，未确认的片段统一为未知。点开卡片，看看当时的它们。</p>
-    <form id="timeline-filters" class="diary-toolbar">
+    <div class="diary-toolbar">
       <div class="day-controls">
         <button id="previous-day" type="button" class="icon-button" aria-label="前一天"><svg><use href="#icon-arrow"/></svg></button>
         <label class="day-picker"><span class="visually-hidden">选择日期</span><input id="day" type="date" required></label>
         <button id="next-day" type="button" class="icon-button" aria-label="后一天"><svg class="flip"><use href="#icon-arrow"/></svg></button>
       </div>
-      <label class="diary-select"><span class="visually-hidden">查看时段</span><select id="hour"><option value="">全天日常</option></select></label>
-      <label class="diary-select"><span class="visually-hidden">选择宠物</span><select id="pet"><option value="">两只都看</option><option value="dog">只看百万</option><option value="cat">只看英镑</option></select></label>
-      <button id="refresh-activities" type="submit" class="quiet">刷新</button>
-    </form>
+    </div>
     <p class="diary-date"><span id="selected-date"></span><span class="date-separator" aria-hidden="true">·</span><span id="capture-status" class="capture-status" aria-live="polite">正在连接</span></p>
   </section>
   <div id="message" class="notice" role="status" aria-live="polite" hidden></div>
   <section aria-label="百万和英镑的活动时间线">
     <div class="pet-lanes">
       <div class="pet-header" data-pet="dog"><span class="pet-avatar"><svg aria-hidden="true"><use href="#icon-dog"/></svg></span><div><h2>百万</h2><p class="pet-current">等一段新日常</p></div></div>
-      <div class="lane-axis-label">时刻<small>北京时间</small></div>
+      <label class="lane-axis-label"><span class="visually-hidden">每格时长</span><select id="timeline-scale"><option value="5">5 分钟</option><option value="15" selected>15 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option></select><small>每格 · 北京时间</small></label>
       <div class="pet-header" data-pet="cat"><span class="pet-avatar"><svg aria-hidden="true"><use href="#icon-cat"/></svg></span><div><h2>英镑</h2><p class="pet-current">等一段新日常</p></div></div>
     </div>
     <ol id="activity-list" class="activity-timeline" aria-label="从近到远的日常"><li class="timeline-empty">正在整理它们的小日常…</li></ol>
-    <div class="timeline-end"><span></span><button id="older-activities" class="quiet" hidden>再往前看看</button><p id="history-note">持续记录中的小日常</p></div>
+    <div class="timeline-end"><button id="older-activities" class="quiet" hidden>再往前看看</button><p id="history-note">持续记录中的小日常</p></div>
   </section>
-  <footer>Million Pound · 时间为采集端估算，活动由 AI 判断，原始画面可在卡片里核对。</footer>
+  <footer>Million Pound · 时间为采集端估算，活动由 AI 判断，点击活动可核对原始画面。</footer>
 </main>
-<template id="moment-template"><li class="timeline-row"><div class="timeline-cell" data-pet="dog"></div><div class="timeline-point"><span class="timeline-dot"></span><time></time></div><div class="timeline-cell" data-pet="cat"></div></li></template>
-<template id="episode-template"><button type="button" class="episode-card"><span class="episode-content"><span class="episode-symbol"><svg aria-hidden="true"><use/></svg></span><span><strong class="episode-title"></strong><span class="episode-duration"></span></span></span><span class="episode-footer"><span class="episode-range"></span><span class="episode-photo" aria-hidden="true"><svg><use href="#icon-camera"/></svg><span>看照片</span></span></span></button></template>
+<template id="episode-template"><li class="timeline-interval"><button type="button" class="episode-interval"><svg class="episode-bracket" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path d="M100 0H0V100H100" vector-effect="non-scaling-stroke"/></svg><svg class="episode-leader" preserveAspectRatio="none" aria-hidden="true"><path vector-effect="non-scaling-stroke"/></svg><span class="episode-label"><strong class="episode-title"></strong><span class="episode-duration"></span><svg class="episode-photo" aria-hidden="true"><use href="#icon-camera"/></svg></span></button></li></template>
+<template id="grid-photo-template"><li class="timeline-photo"><button type="button" class="grid-photo"><img alt="" loading="lazy" decoding="async"><time></time></button></li></template>
+<div id="interval-activities" class="interval-popover" popover role="dialog" aria-labelledby="interval-title">
+  <button type="button" class="icon-button detail-close" popovertarget="interval-activities" popovertargetaction="hide" aria-label="关闭活动列表" autofocus><svg><use href="#icon-close"/></svg></button>
+  <p id="interval-pet" class="eyebrow"></p><h2 id="interval-title"></h2><p class="muted">这一格内的活动，点击可查看照片。</p><ol id="interval-items"></ol>
+</div>
 <dialog id="activity-details" class="activity-dialog" aria-labelledby="detail-title">
   <div class="detail-card">
     <button id="close-details" class="icon-button detail-close" type="button" aria-label="关闭详情"><svg><use href="#icon-close"/></svg></button>
     <p id="detail-pet" class="eyebrow"></p><h2 id="detail-title"></h2><p id="detail-period" class="muted"></p>
-    <div class="detail-picture"><a id="detail-original" target="_blank" rel="noopener"><img id="detail-image" alt=""></a><p id="detail-missing" hidden>这张截图已过期或暂时不可用，活动记录仍然保留。</p></div>
+    <div class="detail-picture"><video id="detail-video" controls muted loop playsinline preload="none" aria-label="这段活动的加速录像，无声" hidden></video><a id="detail-original" target="_blank" rel="noopener"><img id="detail-image" alt=""></a><p id="detail-missing" hidden>这张截图已过期或暂时不可用，活动记录仍然保留。</p></div>
     <div class="detail-gallery"><button id="previous-photo" type="button" class="quiet">← 更早画面</button><span id="detail-photo-index"></span><button id="next-photo" type="button" class="quiet">更晚画面 →</button></div>
     <label class="photo-scrubber"><span class="visually-hidden">选择这段活动的画面</span><input id="photo-position" type="range" min="0" step="1" aria-label="选择这段活动的画面"></label>
     <p id="detail-caption" class="detail-caption"></p><p id="detail-confidence" class="detail-confidence"></p><p id="detail-identity" class="detail-confidence" hidden></p>

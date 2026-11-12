@@ -87,6 +87,20 @@ form.addEventListener("submit", e => {
     notice("设置已保存并生效。"); await status();
   });
 });
+$("#password-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const passwordForm = event.currentTarget;
+  action($("#change-password"), async () => {
+    const fields = passwordForm.elements;
+    $("#password-message").textContent = "";
+    try {
+      if (fields.new_password.value !== fields.confirm_password.value) throw new Error("两次新密码不一致");
+      await api("/api/password", "PUT", {current_password: fields.current_password.value, new_password: fields.new_password.value});
+      passwordForm.reset();
+      window.location.assign("/login");
+    } catch (error) { $("#password-message").textContent = error.message; }
+  });
+});
 $("#toggle").addEventListener("click", e => action(e.target, async () => {
   const result = await api("/api/config", "PUT", {enabled: !config.enabled});
   config.enabled = result.enabled;

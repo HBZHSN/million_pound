@@ -26,6 +26,44 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
                     await media.screenshot(Path(work) / "source.mkv", target, 1)
             self.assertFalse(target.exists())
 
+    async def test_missing_collage_cannot_reuse_previous_image(self):
+        with tempfile.TemporaryDirectory() as work:
+            target = Path(work) / "review.jpg"
+            target.write_bytes(b"old-collage")
+            with patch("million_pound.media.command", new_callable=AsyncMock):
+                with self.assertRaises(media.MediaError):
+                    await media.contact_sheet(Path(work) / "source.mkv", target, 60)
+            self.assertFalse(target.exists())
+
+    async def test_minute_video_and_twenty_frames_in_row_order(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            raw, fast, collage = root / "minute.mkv", root / "fast.mp4", root / "review.jpg"
+            await media.command(
+                "ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "lavfi",
+                "-i", "nullsrc=size=160x90:rate=2:duration=60",
+                "-vf", "geq=lum='16+1.5*N':cb=128:cr=128", "-c:v", "libx264", "-crf", "0",
+                "-pix_fmt", "yuv420p", str(raw), timeout=15,
+            )
+            await media.accelerate(raw, fast, 6, 2)
+            self.assertAlmostEqual(await media.probe_duration(fast), 10, delta=.1)
+            frames = await media.command("ffprobe", "-v", "error", "-count_frames", "-show_entries",
+                                         "stream=nb_read_frames", "-of", "json", str(fast), timeout=10)
+            self.assertEqual(int(json.loads(frames)["streams"][0]["nb_read_frames"]), 120)
+            offsets = await media.contact_sheet(raw, collage, 60)
+            self.assertEqual(offsets, [i * 3 + 1.5 for i in range(20)])
+            size = await media.command("ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                                       "-of", "json", str(collage), timeout=10)
+            self.assertEqual(json.loads(size)["streams"][0], {"width": 2580, "height": 1824})
+            cells = await media.command(
+                "ffmpeg", "-nostdin", "-v", "error", "-i", str(collage),
+                "-vf", "scale=4:5:flags=neighbor", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1", timeout=10,
+            )
+            self.assertEqual(len(cells), 20)
+            self.assertTrue(all(later > earlier + 3 for earlier, later in zip(cells, cells[1:])), cells)
+            self.assertLess(cells[0], 30)
+            self.assertGreater(cells[-1], 190)
+
     async def test_record_accelerate_and_three_original_frames(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)

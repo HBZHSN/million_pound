@@ -20,7 +20,7 @@
         <label>分析片段长度 · 秒<input name="clip_duration" type="number" min="2" max="120" required></label>
         <label>视频加速 · 倍<input name="speed" type="number" min="1" max="16" step="0.5" required></label>
         <label>最短复核间隔 · 秒<input name="review_interval" type="number" min="0" max="86400" required></label>
-      </div><p class="footnote">持续录像，按片段抽帧加速交给 d3；模型分析时继续采集。默认每 10 秒分析一次，每秒抽 2 帧、4 倍速。复核失败也计入复核间隔。</p></fieldset>
+      </div><p class="footnote">持续录像，默认每分钟将 60 秒录像按每秒 2 帧、6 倍速生成 10 秒视频，用一次 d3 请求判断入镜、活动和预警；模型分析时继续采集。仅吃喝、拆家、乱拉乱尿候选交给 swift-1.5，以 4 列 5 行、共 20 帧拼图复核。最短复核间隔默认 0，每段候选均复核；设为正数时，复核失败也计入间隔。</p></fieldset>
       <fieldset class="card"><legend>什么事需要提醒你</legend><div class="fields">
         <label class="mode-row"><span>吃喝<small>进食或饮水，统一记录</small></span><select name="eating"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
         <label class="mode-row"><span>拆家<small>破坏家具或家居物品</small></span><select name="destruction"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
@@ -31,6 +31,13 @@
       <fieldset class="card"><legend>模型服务</legend><div class="fields"><label>模型服务地址<input name="model_url" type="url" required placeholder="http://127.0.0.1:18080"></label><label>模型 API 密钥<input name="model_key" type="password" autocomplete="new-password" maxlength="2048"></label></div><p class="footnote">初判使用 d3，截图复核使用 swift-1.5。密钥留空保留已有值。</p></fieldset>
       <fieldset class="card"><legend>消息与访问</legend><div class="fields"><label>Bark 推送地址<input name="bark_url" type="password" autocomplete="new-password" maxlength="4096" placeholder="https://api.day.app/设备密钥"></label><label>公网访问地址<input name="public_url" type="url" placeholder="https://pets.example.com"></label></div><p class="footnote">Bark 地址留空保留已有值。公网地址接通后填写，通知才会附带可访问的截图链接；链接一小时内有效。</p><button id="test-bark" type="button" class="secondary">发送测试通知</button></fieldset>
     </div><div class="savebar"><p class="muted">保存后立即应用，正在处理的采样会中止。</p><button id="save" class="primary" type="submit">保存设置</button></div>
+  </form>
+  <form id="password-form" class="section" aria-label="修改登录密码">
+    <fieldset class="card"><legend>修改登录密码</legend><div class="fields">
+      <label>当前密码<input name="current_password" type="password" autocomplete="current-password" maxlength="256" required></label>
+      <label>新密码<input name="new_password" type="password" autocomplete="new-password" minlength="11" maxlength="256" required></label>
+      <label>确认新密码<input name="confirm_password" type="password" autocomplete="new-password" minlength="11" maxlength="256" required></label>
+    </div><p class="footnote">密码至少 11 个字符，修改后请用新密码重新登录。</p><div class="savebar"><p id="password-message" class="error-text" role="alert"></p><button id="change-password" class="primary" type="submit">修改密码</button></div></fieldset>
   </form></section>
   <footer>Million Pound · 连续采集，分段判断。抽帧可能遗漏短暂行为，请结合截图判断。</footer>
 </main>

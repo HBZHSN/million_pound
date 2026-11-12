@@ -22,7 +22,7 @@ def main():
         Security.set_password(data, password)
         print("初始登录密码（仅显示一次，磁盘只保存哈希）：" + password)
     elif args.command == "password":
-        password = getpass.getpass("新密码（至少 12 字符）：")
+        password = getpass.getpass("新密码（至少 11 字符）：")
         if password != getpass.getpass("再次输入："):
             parser.error("两次密码不一致")
         try:

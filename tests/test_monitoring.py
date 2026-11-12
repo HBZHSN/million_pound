@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from million_pound.app import create_app
 from million_pound.config import Config, Settings, TimeWindow, in_schedule
+from million_pound.media import MediaError
 from million_pound.models import ModelError, Models, ReviewEvent, send_bark
 from million_pound.monitor import Monitor
 from million_pound.security import Security
@@ -49,6 +50,13 @@ class ScheduleTests(unittest.TestCase):
                       {"public_url": "https://example.com/path"}, {"bark_url": "https://api.day.app"}):
             with self.subTest(value=value), self.assertRaises(ValidationError):
                 Settings(**value)
+
+    def test_minute_clip_becomes_ten_second_video_by_default(self):
+        settings = Settings()
+        self.assertEqual(settings.clip_duration, 60)
+        self.assertEqual(settings.speed, 6)
+        self.assertEqual(settings.clip_duration / settings.speed, 10)
+        self.assertEqual(settings.review_interval, 0)
 
 
 class LocalSetup(unittest.TestCase):
@@ -112,6 +120,27 @@ class LocalTests(LocalSetup):
         self.assertEqual(store.get(event_id)["description"], "进食")
         store.db.close()
 
+    def test_password_change_validates_persists_and_revokes_old_signatures(self):
+        sec = self.security
+        original = sec.path.read_bytes()
+        token = sec.session()
+        expiry = int(time.time()) + 600
+        signature = sec.image_signature("one.jpg", expiry)
+        for password in ("x" * 10, "x" * 257):
+            with self.subTest(length=len(password)), self.assertRaises(ValueError):
+                sec.change_password(password)
+            self.assertEqual(sec.path.read_bytes(), original)
+            self.assertTrue(sec.verify_password(PASSWORD))
+        sec.change_password("new-pass-11")
+        self.assertTrue(sec.verify_password("new-pass-11"))
+        self.assertFalse(sec.verify_password(PASSWORD))
+        self.assertFalse(sec.valid_session(token))
+        self.assertFalse(sec.valid_image("one.jpg", expiry, signature))
+        self.assertTrue(sec.valid_session(sec.session()))
+        self.assertTrue(Security(sec.path.parent).verify_password("new-pass-11"))
+        self.assertNotIn(b"new-pass-11", sec.path.read_bytes())
+        self.assertEqual(sec.path.stat().st_mode & 0o777, 0o600)
+
     def test_activity_pagination_and_evidence_retention(self):
         store = Store(self.root / "data")
         images = self.root / "data" / "images"
@@ -120,8 +149,13 @@ class LocalTests(LocalSetup):
         name = "c" * 32 + "-1.jpg"
         path = images / name
         path.write_bytes(b"proof")
+        video = path.with_suffix(".mp4")
+        video.write_bytes(b"model-video")
+        recent_video = images / ("d" * 32 + "-1.mp4")
+        recent_video.write_bytes(b"recent-video")
         import os
         os.utime(path, (old.timestamp(), old.timestamp()))
+        os.utime(video, (old.timestamp(), old.timestamp()))
         for i in range(55):
             when = old + timedelta(seconds=i * 10)
             activity_id = store.add_activity(when.isoformat(), (when + timedelta(seconds=10)).isoformat())
@@ -135,6 +169,8 @@ class LocalTests(LocalSetup):
         self.assertIsNone(store.previous_activity(second[-1]["id"]))
         store.cleanup(images, 7)
         self.assertFalse(path.exists())
+        self.assertFalse(video.exists())
+        self.assertTrue(recent_video.exists())
         activity = store.get_activity(activity_id)
         self.assertEqual(activity["images"], [])
         self.assertEqual(activity["pets"]["dog"]["activity"], "resting")
@@ -199,11 +235,48 @@ class WebTests(LocalSetup):
         self.login()
         self.assertEqual(self.client.get(private).status_code, 200)
 
+    def test_home_defaults_to_timeline_and_settings_remain_accessible(self):
+        for path in ("/", "/activities", "/settings"):
+            response = self.client.get(path, follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            self.assertEqual(response.headers["location"], "/login")
+        self.login()
+        for path in ("/", "/activities"):
+            page = self.client.get(path)
+            self.assertEqual(page.status_code, 200)
+            self.assertIn('id="activity-list"', page.text)
+            self.assertIn('href="/settings#settings"', page.text)
+            self.assertIn('href="/settings#events"', page.text)
+        settings = self.client.get("/settings")
+        self.assertEqual(settings.status_code, 200)
+        self.assertIn('id="settings-form"', settings.text)
+        self.assertIn('id="password-form"', settings.text)
+
     def test_login_rejects_foreign_origin_and_rate_limits(self):
         self.assertEqual(self.client.post("/api/login", json={"password": PASSWORD}, headers={"Origin": "https://evil.example"}).status_code, 403)
         for _ in range(5):
             self.assertEqual(self.client.post("/api/login", json={"password": "wrong"}).status_code, 401)
         self.assertEqual(self.client.post("/api/login", json={"password": PASSWORD}).status_code, 429)
+
+    def test_public_origin_allows_proxied_login_and_preserves_csrf_protection(self):
+        origin = "https://pets.example.com"
+        self.assertEqual(self.client.post("/api/login", json={"password": PASSWORD},
+                                        headers={"Origin": origin}).status_code, 403)
+        headers = self.login()
+        response = self.client.put("/api/config", json={"public_url": origin + "/"}, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["public_url"], origin)
+        self.assertEqual(Config(self.root).current.public_url, origin)
+        self.assertEqual(self.client.post("/api/login", json={"password": PASSWORD},
+                                        headers={"Origin": origin}).status_code, 200)
+        csrf = self.client.get("/api/session").json()["csrf"]
+        self.assertEqual(self.client.post("/api/logout", headers={"Origin": origin}).status_code, 403)
+        self.assertEqual(self.client.post("/api/logout", headers={"Origin": "https://evil.example",
+                                                                 "X-CSRF-Token": csrf}).status_code, 403)
+        self.assertEqual(self.client.post("/api/login", json={"password": PASSWORD},
+                                        headers={"Origin": "https://evil.example"}).status_code, 403)
+        self.assertEqual(self.client.post("/api/logout", headers={"Origin": origin,
+                                                                 "X-CSRF-Token": csrf}).status_code, 200)
 
     def test_activity_page_images_and_beijing_midnight_filter(self):
         self.assertEqual(self.client.get("/activities", follow_redirects=False).status_code, 303)
@@ -226,8 +299,118 @@ class WebTests(LocalSetup):
         rows = self.client.get("/api/activities", params={"day": beijing_day, "hour": 0}).json()["items"]
         self.assertEqual([r["id"] for r in rows], [activity_id])
         self.assertEqual(rows[0]["pets"]["cat"]["activity"], "not_visible")
+        self.assertIsNone(rows[0]["video"])
+        self.assertEqual(len(self.client.get("/api/activities", params={"day": beijing_day, "limit": 1000}).json()["items"]), 1)
+        self.assertEqual(self.client.get("/api/activities", params={"day": beijing_day, "limit": 1001}).status_code, 422)
         self.assertEqual(self.client.get("/api/activities", params={"day": beijing_day, "hour": 1}).json()["items"], [])
         self.assertEqual(self.client.get("/api/activities?hour=24").status_code, 422)
+
+    def test_activity_videos_are_private_support_ranges_and_handle_missing_files(self):
+        store = Store(self.root / "data")
+        now = datetime.now(timezone.utc).isoformat()
+        activity_id = store.add_activity(now, now)
+        name = "e" * 32 + "-1.jpg"
+        store.activity_images(activity_id, [name], [0])
+        store.update_activity(activity_id, "done")
+        video = (self.root / "data" / "images" / name).with_suffix(".mp4")
+        video.write_bytes(b"exact-model-video")
+        url = f"/api/activities/{activity_id}/video"
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.assertEqual(self.client.get("/data/images/" + video.name).status_code, 404)
+        self.login()
+        self.assertEqual(self.client.get("/api/activities").json()["items"][0]["video"], url)
+        response = self.client.get(url)
+        self.assertEqual(response.content, video.read_bytes())
+        self.assertEqual(response.headers["content-type"], "video/mp4")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        response = self.client.get(url, headers={"Range": "bytes=0-4"})
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.content, b"exact")
+        self.assertEqual(self.client.get("/api/activities/999999/video").status_code, 404)
+        video.unlink()
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertIsNone(self.client.get("/api/activities").json()["items"][0]["video"])
+        video.write_bytes(b"expired-video")
+        store.activity_images(activity_id, [], [])
+        self.assertEqual(self.client.get(url).status_code, 404)
+        (self.root / "data" / "outside.mp4").write_bytes(b"private")
+        store.activity_images(activity_id, ["../outside.jpg"], [0])
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertIsNone(self.client.get("/api/activities").json()["items"][0]["video"])
+        store.db.close()
+
+    def test_password_change_checks_authentication_and_revokes_old_sessions(self):
+        payload = {"current_password": PASSWORD, "new_password": "new-pass-11"}
+        self.assertEqual(self.client.put("/api/password", json=payload).status_code, 401)
+        headers = self.login()
+        old_token = self.client.cookies.get("pet_session")
+        self.assertEqual(self.client.put("/api/password", json=payload).status_code, 403)
+        self.assertEqual(self.client.put("/api/password", json=payload,
+                                        headers={**headers, "Origin": "https://evil.example"}).status_code, 403)
+        for invalid in ("x" * 10, "x" * 257):
+            response = self.client.put("/api/password", json={**payload, "new_password": invalid}, headers=headers)
+            self.assertEqual(response.status_code, 422)
+            self.assertNotIn(invalid, response.text)
+        response = self.client.put("/api/password", json={**payload, "current_password": "wrong"}, headers=headers)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.get("/api/session").status_code, 200)
+        response = self.client.put("/api/password", json=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        for password in payload.values():
+            self.assertNotIn(password, response.text)
+        self.assertEqual(self.client.get("/api/session").status_code, 401)
+        self.assertEqual(self.client.get("/api/session", headers={"Cookie": "pet_session=" + old_token}).status_code, 401)
+        self.assertEqual(self.client.post("/api/login", json={"password": PASSWORD}).status_code, 401)
+        self.assertEqual(self.client.post("/api/login", json={"password": payload["new_password"]}).status_code, 200)
+        self.assertEqual(self.client.get("/api/config").status_code, 200)
+        self.assertTrue(Security(self.root / "data").verify_password(payload["new_password"]))
+        self.assertIs(self.client.app.state.monitor.security, self.client.app.state.security)
+
+    def test_password_change_rate_limits_incorrect_current_password(self):
+        headers = self.login()
+        for _ in range(5):
+            response = self.client.put("/api/password", json={"current_password": "wrong", "new_password": "new-pass-11"}, headers=headers)
+            self.assertEqual(response.status_code, 400)
+        response = self.client.put("/api/password", json={"current_password": PASSWORD, "new_password": "new-pass-11"}, headers=headers)
+        self.assertEqual(response.status_code, 429)
+        self.assertTrue(Security(self.root / "data").verify_password(PASSWORD))
+
+    def test_password_change_write_failure_preserves_password_and_session(self):
+        headers = self.login()
+        original = (self.root / "data" / "auth.json").read_bytes()
+        with patch("million_pound.security.write_private", side_effect=OSError("disk unavailable")):
+            response = self.client.put("/api/password", json={"current_password": PASSWORD, "new_password": "new-pass-11"}, headers=headers)
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual((self.root / "data" / "auth.json").read_bytes(), original)
+        self.assertTrue(self.client.app.state.security.verify_password(PASSWORD))
+        self.assertEqual(self.client.get("/api/session").status_code, 200)
+
+    def test_activity_photos_receive_matching_confirmed_events_across_pages(self):
+        store = Store(self.root / "data")
+        start = datetime.now(timezone.utc).replace(hour=4, minute=0, second=0, microsecond=0)
+        ids = []
+        for offset in (0, 900):
+            when = start + timedelta(seconds=offset)
+            activity_id = store.add_activity(when.isoformat(), (when + timedelta(seconds=10)).isoformat())
+            store.update_activity(activity_id, "done", pets={})
+            ids.append(activity_id)
+        for when, kind, pet, status in ((start, "toileting", "dog", "confirmed"), (start, "destruction", "cat", "confirmed"),
+                                        (start, "eating", "both", "rejected"), (start + timedelta(seconds=900), "eating", "both", "confirmed")):
+            event_id = store.add(when.isoformat(), kind, .9, [], [], status)
+            store.update(event_id, status=status, description="fixture", pet=pet)
+        for index in range(55):
+            when = start + timedelta(seconds=1800 + index * 10)
+            event_id = store.add(when.isoformat(), "toileting", .9, [], [], "confirmed")
+            store.update(event_id, status="confirmed", description="unrelated", pet="dog")
+        store.db.close()
+        self.login()
+        params = {"day": (start + timedelta(hours=8)).date().isoformat(), "limit": 1}
+        page = self.client.get("/api/activities", params=params).json()
+        self.assertEqual(page["items"][0]["events"], [{"type": "eating", "pet": "both"}])
+        self.assertEqual(page["labels"]["toileting"], "乱拉乱尿")
+        page = self.client.get("/api/activities", params={**params, "before": page["next_before"]}).json()
+        self.assertEqual(page["items"][0]["id"], ids[0])
+        self.assertCountEqual(page["items"][0]["events"], [{"type": "toileting", "pet": "dog"}, {"type": "destruction", "pet": "cat"}])
 
 
 class ModelTests(unittest.IsolatedAsyncioTestCase):
@@ -240,9 +423,8 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
                 payload = json.loads(request.content)
                 calls.append((request.url.path, payload))
                 if request.url.path.endswith("systemone"):
-                    if "dog_presence" in payload["questions"]:
-                        return httpx.Response(200, json=visibility_response())
-                    answers = {key: {"noul": .1} for key in ("eating", "destruction", "toileting")}
+                    answers = visibility_response()["answers"]
+                    answers.update({key: {"noul": .1} for key in ("eating", "destruction", "toileting")})
                     answers.update({"dog": {"choice": "sleeping", "probabilities": {"sleeping": .9}},
                                     "cat": {"choice": "not_visible", "probabilities": {"not_visible": .5}}})
                     return httpx.Response(200, json={"answers": answers})
@@ -254,30 +436,37 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(decision["pets"]["dog"]["activity"], "sleeping")
                 self.assertTrue(decision["pets"]["dog"]["identity_verified"])
                 self.assertEqual(decision["pets"]["cat"]["activity"], "uncertain")
-                result = await models.review(cfg, ["eating"], [path], [1])
+                result = await models.review(cfg, ["eating"], path, [i * 3 + 1.5 for i in range(20)])
                 self.assertFalse(result[0].confirmed)
                 with self.assertRaises(ModelError):
-                    await models.review(cfg, ["destruction"], [path], [1])
+                    await models.review(cfg, ["destruction"], path, [i * 3 + 1.5 for i in range(20)])
             self.assertEqual(calls[0][0], "/v1/systemone")
             self.assertTrue(calls[0][1]["videos"][0].startswith("data:video/mp4;base64,"))
             self.assertTrue(calls[0][1]["images"][0].startswith("data:image/jpeg;base64,"))
-            self.assertEqual(set(calls[0][1]["questions"]), {"dog_presence", "cat_presence"})
+            self.assertEqual(sum(path == "/v1/systemone" for path, _ in calls), 1)
+            self.assertEqual(set(calls[0][1]["questions"]), {"dog_presence", "cat_presence", "eating", "destruction", "toileting", "dog", "cat"})
             self.assertIn("黑色", calls[0][1]["state"])
-            self.assertEqual(set(calls[1][1]["questions"]), {"eating", "destruction", "toileting", "dog", "cat"})
-            self.assertNotIn("drinking", calls[1][1]["questions"]["dog"]["criteria"])
-            self.assertIn("喝水", calls[1][1]["questions"]["dog"]["criteria"]["eating"])
-            self.assertIn("百万", calls[1][1]["questions"]["dog"]["instructions"])
-            self.assertIn("英镑", calls[1][1]["questions"]["cat"]["instructions"])
-            self.assertEqual(calls[2][1]["model"], "swift-1.5")
+            self.assertNotIn("drinking", calls[0][1]["questions"]["dog"]["criteria"])
+            self.assertNotIn("resting", calls[0][1]["questions"]["dog"]["criteria"])
+            self.assertIn("睡觉和休息不区分", calls[0][1]["questions"]["dog"]["instructions"])
+            self.assertIn("休息", calls[0][1]["questions"]["dog"]["criteria"]["sleeping"])
+            self.assertIn("喝水", calls[0][1]["questions"]["dog"]["criteria"]["eating"])
+            self.assertIn("百万", calls[0][1]["questions"]["dog"]["instructions"])
+            self.assertIn("英镑", calls[0][1]["questions"]["cat"]["instructions"])
+            self.assertEqual(calls[1][1]["model"], "swift-1.5")
+            content = calls[1][1]["messages"][0]["content"]
+            self.assertEqual([item["type"] for item in content], ["text", "image_url"])
+            self.assertIn("4列5行", content[0]["text"])
+            self.assertIn("第1至20帧", content[0]["text"])
+            self.assertIn("从左到右、从上到下", content[0]["text"])
 
     async def decide_with_visibility(self, visibility, activities=None, previous=None):
         calls = []
         def handler(request):
             payload = json.loads(request.content)
             calls.append(payload)
-            if "dog_presence" in payload["questions"]:
-                return httpx.Response(200, json=visibility)
-            answers = {key: {"noul": .1} for key in ("eating", "destruction", "toileting")}
+            answers = dict(visibility["answers"])
+            answers.update({key: {"noul": .1} for key in ("eating", "destruction", "toileting")})
             answers.update({"dog": {"choice": "sleeping", "probabilities": {"sleeping": .99}},
                             "cat": {"choice": "sleeping", "probabilities": {"sleeping": .99}}})
             answers.update(activities or {})
@@ -287,6 +476,7 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             path.write_bytes(b"fixture")
             async with httpx.AsyncClient(trust_env=False, transport=httpx.MockTransport(handler)) as client:
                 result = await Models(client).decide(Settings(), path, path, previous)
+        self.assertEqual(len(calls), 1)
         return result, calls
 
     async def test_same_top_activity_continues_regardless_of_score(self):
@@ -307,6 +497,37 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(result["pets"][pet]["continued"])
                 previous = result["pets"]
 
+    async def test_uncertain_activity_keeps_all_candidate_scores(self):
+        probabilities = {"uncertain": .8, "not_visible": .1, "walking": .07, "sleeping": .03}
+        result, _ = await self.decide_with_visibility(visibility_response(), {
+            "dog": {"choice": "uncertain", "probabilities": probabilities}})
+        decision = result["pets"]["dog"]
+        self.assertEqual(decision["activity"], "uncertain")
+        self.assertEqual(decision["proposed_activity"], "uncertain")
+        self.assertEqual(decision["confidence"], .8)
+        self.assertEqual(decision["probabilities"], probabilities)
+        self.assertTrue(decision["identity_verified"])
+
+    async def test_same_candidate_state_continues_even_when_model_selects_uncertain(self):
+        for activity in ("sleeping", "eating", "walking", "playing", "other"):
+            with self.subTest(activity=activity):
+                previous = {"dog": {"activity": activity, "visibility": "present", "identity_verified": True}}
+                probabilities = {"uncertain": .9, activity: .1}
+                result, _ = await self.decide_with_visibility(visibility_response(), {
+                    "dog": {"choice": "uncertain", "probabilities": probabilities}}, previous)
+                decision = result["pets"]["dog"]
+                self.assertEqual(decision["activity"], activity)
+                self.assertTrue(decision["continued"])
+                self.assertEqual(decision["proposed_activity"], "uncertain")
+                self.assertEqual(decision["probabilities"], probabilities)
+
+    async def test_different_candidate_state_is_suspected_without_inheriting_previous(self):
+        previous = {"dog": {"activity": "sleeping", "visibility": "present", "identity_verified": True}}
+        result, _ = await self.decide_with_visibility(visibility_response(), {
+            "dog": {"choice": "uncertain", "probabilities": {"uncertain": .8, "walking": .15, "sleeping": .05}}}, previous)
+        self.assertEqual(result["pets"]["dog"]["activity"], "uncertain")
+        self.assertFalse(result["pets"]["dog"]["continued"])
+
     async def test_continuation_requires_same_pet_and_previously_verified_activity(self):
         for previous in ({}, {"cat": {"activity": "sleeping", "visibility": "present", "identity_verified": True}},
                          {"dog": {"activity": "sleeping"}},
@@ -321,11 +542,12 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_continuation_stops_when_visibility_or_first_choice_changes(self):
         previous = {"cat": {"activity": "sleeping", "visibility": "present", "identity_verified": True}}
-        for presence in (("absent", .95), ("uncertain", .95), ("present", .7)):
+        for presence in (("absent", .95), ("absent", .6), ("uncertain", .95)):
             with self.subTest(presence=presence):
                 result, calls = await self.decide_with_visibility(visibility_response(cat=presence), previous=previous)
                 self.assertNotEqual(result["pets"]["cat"]["activity"], "sleeping")
-                self.assertNotIn("cat", calls[1]["questions"])
+                self.assertIn("cat", calls[0]["questions"])
+                self.assertFalse(result["pets"]["cat"]["identity_verified"])
         for choice, score in (("uncertain", .9), ("not_visible", .95), ("walking", .2), ("walking", .9)):
             with self.subTest(choice=choice, score=score):
                 result, _ = await self.decide_with_visibility(visibility_response(), {
@@ -335,13 +557,13 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_choice_must_have_the_highest_valid_score(self):
         previous = {"dog": {"activity": "sleeping", "visibility": "present", "identity_verified": True}}
-        for probabilities in ({"sleeping": .2, "resting": .8}, {"sleeping": .2, "resting": True},
-                              {"sleeping": .2, "resting": float("nan")}, {"sleeping": .2, "invalid": .1}):
+        for probabilities in ({"sleeping": .2, "walking": .8}, {"sleeping": .2, "walking": True},
+                              {"sleeping": .2, "walking": float("nan")}, {"sleeping": .2, "invalid": .1}):
             with self.subTest(probabilities=probabilities), self.assertRaises(ModelError):
                 await self.decide_with_visibility(visibility_response(), {
                     "dog": {"choice": "sleeping", "probabilities": probabilities}}, previous)
         result, _ = await self.decide_with_visibility(visibility_response(), {
-            "dog": {"choice": "sleeping", "probabilities": {"sleeping": .2, "resting": .2}}}, previous)
+            "dog": {"choice": "sleeping", "probabilities": {"sleeping": .2, "walking": .2}}}, previous)
         self.assertEqual(result["pets"]["dog"]["activity"], "sleeping")
         self.assertTrue(result["pets"]["dog"]["continued"])
 
@@ -350,24 +572,29 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["pets"]["cat"]["activity"], "not_visible")
         self.assertFalse(result["pets"]["cat"]["identity_verified"])
         self.assertEqual(result["pets"]["dog"]["activity"], "sleeping")
-        self.assertNotIn("cat", calls[1]["questions"])
-        self.assertLessEqual(len(calls[1]["questions"]), 6)
+        self.assertIn("cat", calls[0]["questions"])
 
     async def test_unclear_identity_is_not_classified_as_sleeping(self):
-        for visibility in (("present", .7), ("present", .79), ("uncertain", .95), ("absent", .6)):
+        for visibility in (("uncertain", .95), ("uncertain", .1)):
             with self.subTest(visibility=visibility):
                 result, calls = await self.decide_with_visibility(visibility_response(cat=visibility))
                 self.assertEqual(result["pets"]["cat"]["activity"], "uncertain")
-                self.assertNotIn("cat", calls[1]["questions"])
+                self.assertIn("cat", calls[0]["questions"])
+                self.assertFalse(result["pets"]["cat"]["identity_verified"])
 
-    async def test_visible_cat_is_not_suppressed_by_presence_gate(self):
-        result, calls = await self.decide_with_visibility(visibility_response(cat=("present", .8)), {
-            "cat": {"choice": "walking", "probabilities": {"walking": .9}}})
-        self.assertEqual(result["pets"]["cat"]["activity"], "walking")
-        self.assertTrue(result["pets"]["cat"]["identity_verified"])
-        self.assertIn("cat", calls[1]["questions"])
+    async def test_presence_choice_has_no_confidence_threshold(self):
+        for score in (0, .1, .6, .7, .79, .8, .99):
+            for presence in ("present", "absent"):
+                with self.subTest(presence=presence, score=score):
+                    result, calls = await self.decide_with_visibility(visibility_response(cat=(presence, score)), {
+                        "cat": {"choice": "walking", "probabilities": {"walking": .9}}})
+                    decision = result["pets"]["cat"]
+                    self.assertEqual(decision["activity"], "walking" if presence == "present" else "not_visible")
+                    self.assertEqual(decision["identity_verified"], presence == "present")
+                    self.assertEqual(decision["visibility_confidence"], score)
+                    self.assertIn("cat", calls[0]["questions"])
 
-    async def test_both_absent_skip_activity_and_warning_calls(self):
+    async def test_both_absent_ignore_activities_and_warnings_in_joint_response(self):
         result, calls = await self.decide_with_visibility(visibility_response(dog=("absent", .95), cat=("absent", .95)))
         self.assertEqual(len(calls), 1)
         self.assertTrue(all(pet["activity"] == "not_visible" for pet in result["pets"].values()))
@@ -399,7 +626,7 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             path = Path(tmp) / "frame.jpg"
             path.write_bytes(b"fixture")
             async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-                result = await Models(client).review(Settings(), ["eating"], [path], [1])
+                result = await Models(client).review(Settings(), ["eating"], path, [i * 3 + 1.5 for i in range(20)])
                 self.assertEqual(result[0].description, "百万和英镑在碗前吃喝")
 
     async def test_invalid_probability_is_an_error(self):
@@ -439,8 +666,12 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.monitor = Monitor(self.config, self.store, Security(self.root / "data"), self.root / "data", self.client)
         async def generate(source, target, parameter, *extra):
             target.write_bytes(b"fixture")
+        async def collage(source, target, duration):
+            target.write_bytes(b"collage")
+            return [round(duration * (i + .5) / 20, 3) for i in range(20)]
         self.patches = [patch("million_pound.media.accelerate", side_effect=generate),
                         patch("million_pound.media.screenshot", side_effect=generate),
+                        patch("million_pound.media.contact_sheet", side_effect=collage),
                         patch("million_pound.monitor.send_bark", new_callable=AsyncMock)]
         self.mocks = [p.start() for p in self.patches]
         self.monitor.models.decide = AsyncMock(return_value={
@@ -461,41 +692,62 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
 
     async def analyze(self, cfg=None, started=None):
         started = started or datetime.now(timezone.utc)
-        activity_id = self.store.add_activity(started.isoformat(), (started + timedelta(seconds=10)).isoformat())
+        cfg = cfg or self.config.current
+        duration = cfg.clip_duration
+        activity_id = self.store.add_activity(started.isoformat(), (started + timedelta(seconds=duration)).isoformat())
         name = f"{activity_id:032x}-1.jpg"
         (self.monitor.images / name).write_bytes(b"evidence")
-        self.store.activity_images(activity_id, [name], [5])
+        self.store.activity_images(activity_id, [name], [duration / 2])
         raw = self.root / f"raw-{activity_id}.mkv"
         raw.write_bytes(b"original")
-        await self.monitor.analyze(cfg or self.config.current, raw, activity_id, started, 10)
+        await self.monitor.analyze(cfg, raw, activity_id, started, duration)
         return activity_id
 
-    async def test_continuation_uses_only_adjacent_completed_record_from_store(self):
+    async def test_state_context_uses_recent_verified_records_and_expires(self):
         self.monitor.models.decide.return_value["scores"] = {"eating": .1, "destruction": .1, "toileting": .1}
         base = datetime.now(timezone.utc) - timedelta(hours=1)
         for i, (status, gap) in enumerate((("done", 0), ("done", -.001), ("done", -.021), ("done", -.1),
-                                            ("done", -.101), ("done", 1), ("done", 2), ("done", -1),
+                                            ("done", -.101), ("done", 1), ("done", 2), ("done", 60), ("done", 61), ("done", -1),
                                             ("error", 0), ("skipped", 0), ("cancelled", 0), ("pending", 0))):
             with self.subTest(status=status, gap=gap):
-                start = base + timedelta(seconds=i * 100)
+                start = base + timedelta(seconds=i * 300)
                 prior_id = self.store.add_activity(start.isoformat(), (start + timedelta(seconds=10)).isoformat())
                 pets = {"dog": {"activity": "sleeping", "visibility": "present", "identity_verified": True}}
                 self.store.update_activity(prior_id, status, pets=pets)
                 await self.analyze(started=start + timedelta(seconds=10 + gap))
-                expected = pets if status == "done" and -.1 <= gap <= 1 else {}
+                expected = pets if status == "done" and -.1 <= gap < 60 else {}
                 self.assertEqual(self.monitor.models.decide.call_args.args[3], expected)
 
+    async def test_short_hidden_gaps_keep_each_pets_own_state_as_context(self):
+        self.monitor.models.decide.return_value["scores"] = {"eating": .1, "destruction": .1, "toileting": .1}
+        start = datetime.now(timezone.utc) - timedelta(hours=1)
+        pets = {"dog": {"activity": "walking", "visibility": "present", "identity_verified": True},
+                "cat": {"activity": "sleeping", "visibility": "present", "identity_verified": True}}
+        first = self.store.add_activity(start.isoformat(), (start + timedelta(seconds=10)).isoformat())
+        self.store.update_activity(first, "done", pets=pets)
+        gap = self.store.add_activity((start + timedelta(seconds=10)).isoformat(), (start + timedelta(seconds=20)).isoformat())
+        self.store.update_activity(gap, "error")
+        await self.analyze(started=start + timedelta(seconds=20))
+        self.assertEqual(self.monitor.models.decide.call_args.args[3], pets)
+
     async def test_record_mode_notification_and_review_interval(self):
-        await self.analyze()
+        cfg = self.config.current.model_copy(update={"review_interval": 60})
+        await self.analyze(cfg)
         rows = self.store.recent()
         self.assertEqual({r["type"]: r["notification"] for r in rows}, {"eating": "record_only", "destruction": "sent"})
         self.mocks[-1].assert_awaited_once()
         image_url = self.mocks[-1].call_args.args[-1]
         self.assertTrue(image_url.startswith("https://home.local/shared/"))
-        self.assertEqual(rows[0]["frame_offsets"], [1.0, 5.0, 9.0])
-        await self.analyze()
+        self.assertEqual(rows[0]["frame_offsets"], [6.0, 30.0, 54.0])
+        review_args = self.monitor.models.review.call_args.args
+        self.assertIsInstance(review_args[2], Path)
+        self.assertEqual(review_args[2].name, "review.jpg")
+        self.assertEqual(review_args[3], [i * 3 + 1.5 for i in range(20)])
+        self.mocks[2].assert_awaited_once()
+        await self.analyze(cfg)
         self.assertEqual({r["status"] for r in self.store.recent()[:2]}, {"unreviewed"})
         self.monitor.models.review.assert_awaited_once()
+        self.mocks[2].assert_awaited_once()
         self.assertFalse(list((self.root / "data").glob("clip-*")))
 
     async def test_continuous_event_is_not_notified_twice(self):
@@ -509,11 +761,34 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.monitor.models.decide.return_value["scores"] = {"eating": .1, "destruction": .2, "toileting": .3}
         activity_id = await self.analyze()
         self.monitor.models.review.assert_not_awaited()
+        self.mocks[2].assert_not_awaited()
+        self.mocks[-1].assert_not_awaited()
         self.assertEqual(self.store.recent(), [])
         activity = self.store.get_activity(activity_id)
         self.assertEqual(activity["status"], "done")
         self.assertEqual(activity["pets"]["dog"]["activity"], "eating")
         self.assertEqual(len(activity["images"]), 1)
+
+    async def test_keeps_the_exact_video_sent_to_d3_after_analysis(self):
+        sent = []
+        result = self.monitor.models.decide.return_value
+        result["scores"] = {"eating": .1, "destruction": .1, "toileting": .1}
+        async def decide(cfg, video, snapshot, prior):
+            sent.append(video.read_bytes())
+            return result
+        self.monitor.models.decide.side_effect = decide
+        activity_id = await self.analyze()
+        image = self.monitor.images / self.store.get_activity(activity_id)["images"][0]
+        self.assertEqual(image.with_suffix(".mp4").read_bytes(), sent[0])
+        self.assertFalse(list((self.root / "data").glob("clip-*")))
+
+    async def test_failed_decision_does_not_keep_a_video_or_call_review(self):
+        self.monitor.models.decide.side_effect = ModelError("模型失败")
+        with self.assertRaises(ModelError):
+            await self.analyze()
+        self.assertFalse(list(self.monitor.images.glob("*.mp4")))
+        self.assertFalse(list((self.root / "data").glob("clip-*")))
+        self.monitor.models.review.assert_not_awaited()
 
     async def test_failed_review_is_recorded_without_notification(self):
         self.monitor.models.review.side_effect = ModelError("模型失败")
@@ -523,7 +798,29 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(self.store.meta("last_review"), 0)
         self.mocks[-1].assert_not_awaited()
 
-    async def test_cancellation_cleans_video_and_marks_candidates(self):
+    async def test_each_special_event_uses_one_review(self):
+        for kind in ("eating", "destruction", "toileting"):
+            with self.subTest(kind=kind):
+                self.monitor.models.decide.return_value["scores"] = {
+                    key: .9 if key == kind else .1 for key in ("eating", "destruction", "toileting")}
+                self.monitor.models.review.return_value = [ReviewEvent(
+                    type=kind, confirmed=False, pet="unknown", description="证据不足")]
+                self.monitor.models.review.reset_mock()
+                await self.analyze()
+                self.monitor.models.review.assert_awaited_once()
+                self.assertEqual(self.monitor.models.review.call_args.args[1], [kind])
+                self.assertEqual(self.store.recent()[0]["status"], "rejected")
+        self.mocks[-1].assert_not_awaited()
+
+    async def test_failed_collage_does_not_call_review_or_notify(self):
+        self.mocks[2].side_effect = MediaError("无法生成20帧复核拼图")
+        with self.assertRaises(MediaError):
+            await self.analyze()
+        self.assertEqual({r["status"] for r in self.store.recent()}, {"review_error"})
+        self.monitor.models.review.assert_not_awaited()
+        self.mocks[-1].assert_not_awaited()
+
+    async def test_review_cancellation_keeps_activity_video_and_marks_candidates(self):
         entered = asyncio.Event()
         async def wait(*args):
             entered.set()
@@ -536,6 +833,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertEqual({r["status"] for r in self.store.recent()}, {"cancelled"})
         self.assertFalse(list((self.root / "data").glob("clip-*")))
+        self.assertEqual(len(list(self.monitor.images.glob("*.mp4"))), 1)
         self.mocks[-1].assert_not_awaited()
 
     async def test_capture_continues_during_model_wait_and_cleans_pending(self):

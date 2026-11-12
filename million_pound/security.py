@@ -17,11 +17,16 @@ class Security:
 
     @staticmethod
     def set_password(data: Path, password: str):
-        if not 12 <= len(password) <= 256:
-            raise ValueError("密码长度需要 12 到 256 个字符")
+        if not 11 <= len(password) <= 256:
+            raise ValueError("密码长度需要 11 到 256 个字符")
         salt = secrets.token_hex(16)
         digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1).hex()
-        write_private(data / "auth.json", {"salt": salt, "hash": digest, "secret": secrets.token_hex(32)})
+        auth = {"salt": salt, "hash": digest, "secret": secrets.token_hex(32)}
+        write_private(data / "auth.json", auth)
+        return auth
+
+    def change_password(self, password: str):
+        self.auth = self.set_password(self.path.parent, password)
 
     def verify_password(self, password: str) -> bool:
         digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(self.auth["salt"]), n=16384, r=8, p=1).hex()

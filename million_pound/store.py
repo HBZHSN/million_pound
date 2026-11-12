@@ -87,13 +87,24 @@ class Store:
         return self.decode(self.db.execute("SELECT * FROM activities WHERE id < ? ORDER BY id DESC LIMIT 1",
                                            (activity_id,)).fetchone())
 
-    def activities(self, before=None, start=None, end=None):
+    def activities(self, before=None, start=None, end=None, limit=50):
         query, values = "SELECT * FROM activities WHERE id < ?", [before or 2**63 - 1]
         if start is not None:
             query += " AND ended_at>? AND started_at<?"
             values += [start, end]
-        rows = self.db.execute(query + " ORDER BY id DESC LIMIT 50", values).fetchall()
+        rows = self.db.execute(query + " ORDER BY id DESC LIMIT ?", values + [limit]).fetchall()
         return [self.decode(row) for row in rows]
+
+    def activity_events(self, items):
+        if not items:
+            return {}
+        times = [item["started_at"] for item in items]
+        rows = self.db.execute("SELECT occurred_at,type,pet FROM events WHERE status='confirmed' AND occurred_at>=? AND occurred_at<=?",
+                               (min(times), max(times)))
+        events = {}
+        for row in rows:
+            events.setdefault(row["occurred_at"], []).append({"type": row["type"], "pet": row["pet"]})
+        return events
 
     def meta(self, key: str) -> float:
         row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -115,6 +126,6 @@ class Store:
         with self.db:
             self.db.execute("UPDATE events SET images='[]' WHERE occurred_at<?", (cutoff.isoformat(),))
             self.db.execute("UPDATE activities SET images='[]' WHERE ended_at<?", (cutoff.isoformat(),))
-        for image in images.glob("*.jpg"):
-            if image.stat().st_mtime < cutoff.timestamp():
+        for image in images.iterdir():
+            if image.suffix in {".jpg", ".mp4"} and image.stat().st_mtime < cutoff.timestamp():
                 image.unlink(missing_ok=True)

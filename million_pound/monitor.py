@@ -190,8 +190,9 @@ class Monitor:
             self.status["phase"] = "deciding"
             await media.accelerate(raw, fast, cfg.speed, cfg.sample_fps)
             center = self.store.get_activity(activity_id)["images"][0]
-            prior = previous_pets(self.store.previous_activity(activity_id), started)
+            prior = previous_pets(self.store.activities(before=activity_id), started)
             result = await self.models.decide(cfg, fast, self.images / center, prior)
+            fast.replace((self.images / center).with_suffix(".mp4"))
             scores = result["scores"]
             self.store.update_activity(activity_id, "done", pets=result["pets"])
             self.status["last_scores"] = scores
@@ -213,7 +214,9 @@ class Monitor:
             self.store.set_meta("last_review", time.time())
             self.status["phase"] = "reviewing"
             try:
-                results = await self.models.review(cfg, candidates, paths, offsets)
+                collage = Path(work) / "review.jpg"
+                review_offsets = await media.contact_sheet(raw, collage, duration)
+                results = await self.models.review(cfg, candidates, collage, review_offsets)
                 for event in results:
                     event_id = ids[event.type]
                     status = "confirmed" if event.confirmed else "rejected"
@@ -250,7 +253,7 @@ class Monitor:
                             raise
                         self.store.update(event_id, status=status, description=event.description,
                                           pet=event.pet, notification=notification)
-            except ModelError:
+            except (media.MediaError, ModelError, OSError):
                 for event_id in ids.values():
                     if self.store.get(event_id)["status"] == "reviewing":
                         self.store.update(event_id, status="review_error", description="模型复核失败，未确认事件")

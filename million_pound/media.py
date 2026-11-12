@@ -116,3 +116,15 @@ async def screenshot(source: Path, target: Path, offset: float):
     )
     if not target.exists() or not target.stat().st_size:
         raise MediaError("无法截取视频画面")
+
+
+async def contact_sheet(source: Path, target: Path, duration: float):
+    target.unlink(missing_ok=True)
+    await command(
+        "ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(source), "-an",
+        "-vf", f"setpts=PTS-STARTPTS,fps=20/{duration},scale=640:-2,tile=4x5:nb_frames=20:padding=4:margin=4",
+        "-frames:v", "1", "-pix_fmt", "yuvj420p", "-q:v", "3", "-update", "1", str(target), timeout=90,
+    )
+    if not target.exists() or not target.stat().st_size:
+        raise MediaError("无法生成20帧复核拼图")
+    return [round(duration * (i + .5) / 20, 3) for i in range(20)]

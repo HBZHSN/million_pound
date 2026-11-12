@@ -9,10 +9,11 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 
-from .config import EVENTS, Settings
+from .config import ACTIVITIES, EVENTS, Settings
 
 
 PET_NAMES = {"dog": "百万", "cat": "英镑"}
+STATE_HOLD_SECONDS = 60
 PET_APPEARANCE = (
     "百万是浅黄色或奶油色、短毛、大体型的拉布拉多犬。"
     "英镑是深色或黑色、长毛、体型明显小于百万、长尾蓬松的缅因猫。"
@@ -66,21 +67,42 @@ def choice_answer(result, key, criteria):
         raise ModelError("d3 返回的入镜或活动判断格式无效") from None
 
 
-def previous_pets(previous, started):
-    if previous and previous["status"] == "done":
+def previous_pets(records, started):
+    pets = {}
+    for previous in records:
         gap = (started - datetime.fromisoformat(previous["ended_at"])).total_seconds()
         # 连续切片的末帧边界可能产生几十毫秒的重叠。
-        if -0.1 <= gap <= 1:
-            return previous["pets"]
-    return {}
+        if gap < -0.1:
+            return {}
+        if gap >= STATE_HOLD_SECONDS:
+            break
+        if previous["status"] != "done":
+            continue
+        for pet in PET_NAMES:
+            decision = previous["pets"].get(pet, {})
+            if pet not in pets and decision.get("identity_verified") and decision.get("visibility") == "present":
+                pets[pet] = decision
+        if len(pets) == len(PET_NAMES):
+            break
+    return pets
 
 
-def activity_decision(activity, confidence, previous):
+def activity_decision(activity, confidence, previous, probabilities=None):
+    aliases = {"resting": "sleeping", "drinking": "eating"}
+    activity = aliases.get(activity, activity)
+    candidate = activity
+    if activity == "uncertain":
+        candidates = {key: score for key, score in (probabilities or {}).items()
+                      if key in ACTIVITIES and key not in ("uncertain", "not_visible")}
+        candidate = max(candidates, key=candidates.get, default=None)
+        candidate = aliases.get(candidate, candidate)
     threshold = 0.8 if activity == "sleeping" else 0.6
-    same = (activity not in ("uncertain", "not_visible") and previous.get("activity") == activity
+    previous_activity = aliases.get(previous.get("activity"), previous.get("activity"))
+    same = (candidate not in (None, "uncertain", "not_visible") and previous_activity == candidate
             and previous.get("identity_verified") and previous.get("visibility") == "present")
-    return {"activity": activity if same or confidence >= threshold else "uncertain",
-            "continued": bool(same and confidence < threshold)}
+    if same:
+        return {"activity": candidate, "continued": activity == "uncertain" or confidence < threshold}
+    return {"activity": activity if confidence >= threshold else "uncertain", "continued": False}
 
 
 async def post_json(client: httpx.AsyncClient, url: str, payload: dict, *, key="", service="模型"):
@@ -109,23 +131,6 @@ class Models:
             "absent": "没有看到这只宠物；不能因为另一只宠物出现、已知它住在家里或某个垫子存在就认为它也在",
             "uncertain": "只有模糊局部、遮挡、暗色团块或身份无法确定，无法确认这只宠物是否出现在画面中",
         }
-        visibility = await post_json(self.client, model_endpoint(settings, "systemone"), {
-            "model": "d3", "state": state + "先逐只清点真正可见的动物，只判断是否入镜，不判断它在做什么。",
-            "questions": {pet + "_presence": {"type": "choice", "instructions": f"能否在本段录像中清楚辨认出{name}的真实身体？",
-                                                "criteria": visibility_criteria} for pet, name in PET_NAMES.items()},
-            "videos": videos, "images": images,
-        }, key=settings.model_key)
-        pets, visible = {}, []
-        for pet in PET_NAMES:
-            presence, confidence = choice_answer(visibility, pet + "_presence", visibility_criteria)
-            verified = presence == "present" and confidence >= 0.8
-            absent = presence == "absent" and confidence >= 0.7
-            pets[pet] = {"activity": "not_visible" if absent else "uncertain", "confidence": confidence if absent else 0,
-                         "visibility": presence, "visibility_confidence": confidence, "identity_verified": verified}
-            if verified:
-                visible.append(pet)
-        if all(pets[pet]["activity"] == "not_visible" for pet in PET_NAMES):
-            return {"scores": {key: 0 for key in EVENTS}, "pets": pets}
         descriptions = {
             "eating": "宠物正在碗或饮水器前实际吃东西或喝水，统一称为吃喝，不区分水盆和饭盆，不包括路过或闻嗅",
             "destruction": "宠物正在撕咬或抓挠家具、门、线缆等家居物品，不包括正常玩宠物玩具",
@@ -133,29 +138,34 @@ class Models:
         }
         payload = {
             "model": "d3",
-            "state": state + "入镜检查已确认的目标：" + "、".join(PET_NAMES[pet] for pet in visible) + "。"
-                     "活动仅判断已确认入镜的目标，找不到其真实身体时选 uncertain 或 not_visible。"
-                     "预警仅按画面中可见的实际行为判断，不得猜测。",
-            "questions": {key: {"type": "noul", "instructions": text + "，是否发生？",
-                                "criteria": {"true": "明确发生", "false": "未发生或证据不足"}}
-                          for key, text in descriptions.items()},
+            "state": state + "在同一次判断中独立检查每只宠物是否入镜、主要活动及三类预警。"
+                     "先核对真实身体和身份；未确认入镜的宠物，活动选 uncertain 或 not_visible。"
+                     "预警需检查整段录像中是否曾发生，不能只看主要活动或中间截图；"
+                     "仅按可见的实际行为判断，无宠物时不应产生预警，不得猜测。",
+            "questions": {
+                **{pet + "_presence": {"type": "choice", "instructions": f"能否在本段录像中清楚辨认出{name}的真实身体？",
+                                       "criteria": visibility_criteria} for pet, name in PET_NAMES.items()},
+                **{key: {"type": "noul", "instructions": text + "，在本段录像中是否曾发生？",
+                         "criteria": {"true": "明确发生", "false": "未发生或证据不足"}}
+                   for key, text in descriptions.items()},
+            },
             "videos": videos, "images": images,
         }
         criteria = {
-            "sleeping": "清楚看见这只宠物的身体、头部和闭眼睡姿，在多个时刻持续可见；仅静止、蜷卧、看不清眼睛或没有出现都不能算睡觉，证据不足选 resting 或 uncertain",
+            "sleeping": "该宠物正在睡觉或安静休息，包括趴卧、蜷卧、闭眼或坐着、站着不动；不包括走动、玩耍、吃喝等明确活动，看不清时选 uncertain",
             "eating": "该宠物正在碗、食物或饮水器前实际吃东西或喝水，统一为吃喝；不要求区分水盆和饭盆，不包括路过或闻嗅",
             "walking": "该宠物在画面中走动、散步或跑动",
             "playing": "该宠物正在玩玩具、与另一只宠物互动或嬉戏",
-            "resting": "该宠物坐着、站着或卧躺休息，没有明确睡着或其他行为",
             "not_visible": "整段视频中均看不到该宠物，不是仅短暂被遮挡或难以辨认",
             "other": "能看见该宠物，正在进行梳理、抓痒等上述类别之外的活动",
             "uncertain": "画面遮挡、太暗、身份或行为证据不足，无法可靠判断",
         }
-        for pet in visible:
+        for pet in PET_NAMES:
             name = PET_NAMES[pet]
             payload["questions"][pet] = {
                 "type": "choice", "instructions": f"这段视频里{name}最主要的活动是什么？"
-                "请选择一个最符合可见证据的类别。不清楚时选 uncertain，不要把看不清等同于未入镜。",
+                "睡觉和休息不区分，统一选择 sleeping。请选择一个最符合可见证据的类别。"
+                "不清楚时选 uncertain，不要把看不清等同于未入镜。",
                 "criteria": criteria,
             }
         result = await post_json(self.client, model_endpoint(settings, "systemone"), payload, key=settings.model_key)
@@ -166,18 +176,30 @@ class Models:
                 raise ValueError
         except (KeyError, TypeError, ValueError):
             raise ModelError("d3 返回的活动或事件判断格式无效") from None
-        for pet in visible:
+        pets = {}
+        for pet in PET_NAMES:
+            presence, presence_confidence = choice_answer(result, pet + "_presence", visibility_criteria)
+            verified = presence == "present"
+            absent = presence == "absent"
             activity, confidence = choice_answer(result, pet, criteria)
-            pets[pet].update(activity_decision(activity, confidence, (previous or {}).get(pet, {})),
-                             confidence=confidence, proposed_activity=activity)
+            pets[pet] = {"activity": "not_visible" if absent else "uncertain", "confidence": presence_confidence if absent else 0,
+                         "visibility": presence, "visibility_confidence": presence_confidence, "identity_verified": verified}
+            if not verified:
+                continue
+            pets[pet].update(activity_decision(activity, confidence, (previous or {}).get(pet, {}), result["answers"][pet]["probabilities"]),
+                             confidence=confidence, proposed_activity=activity,
+                             probabilities=result["answers"][pet]["probabilities"])
             if activity == "not_visible":
                 pets[pet].update(activity="uncertain", identity_verified=False)
+        if all(pets[pet]["activity"] == "not_visible" for pet in PET_NAMES):
+            scores = {key: 0 for key in EVENTS}
         return {"scores": scores, "pets": pets}
 
-    async def review(self, settings: Settings, candidates: list[str], images: list[Path], offsets: list[float]):
+    async def review(self, settings: Settings, candidates: list[str], image: Path, offsets: list[float]):
         prompt = (
-            "你在复核家庭宠物监控。" + PET_APPEARANCE + "截图来自同一段原速视频，"
-            f"时间偏移（秒）依次为 {offsets}。初判候选为 {candidates}。逐一复核所有候选，"
+            "你在复核家庭宠物监控。" + PET_APPEARANCE + "这是一张由同一段原速视频均匀抽取20帧组成的拼图，"
+            "按4列5行排列，从左到右、从上到下依次为第1至20帧，按时间先后阅读。"
+            f"各帧在原视频内的时间偏移（秒）约为 {offsets}。初判候选为 {candidates}。逐一复核所有候选，"
             "没有清晰证据则 confirmed=false。eating 统一表示吃喝，进食或饮水均可，不必分辨水盆和饭盆；"
             "但需有实际吃喝证据，不能只是路过或闻嗅。拆家不包括玩宠物玩具；"
             "乱拉乱尿需明确排泄证据且在猫砂盆或指定厕所外，仅蹲坐不足以确认。"
@@ -188,8 +210,8 @@ class Models:
         )
         result = await post_json(self.client, model_endpoint(settings, "chat/completions"), {
             "model": "swift-1.5", "temperature": 0, "max_tokens": 2048,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}] + [
-                {"type": "image_url", "image_url": {"url": data_url(path, "image/jpeg")}} for path in images
+            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url(image, "image/jpeg")}},
             ]}],
         }, key=settings.model_key)
         try:
