@@ -11,7 +11,7 @@
     <article class="card"><p class="eyebrow">最近一次采样</p><h2 id="last-started">—</h2><p id="next-sample" class="muted">时间均为北京时间</p></article>
     <article class="card"><p class="eyebrow">最近一次复核</p><h2 id="last-review">—</h2><p class="muted">先由 d3 初判，有候选时才调用 swift-1.5</p></article>
   </section>
-  <section id="events" class="section"><div class="section-heading"><div><p class="eyebrow">LITTLE MOMENTS</p><h2>最近事件</h2></div><button id="refresh" class="secondary">刷新事件</button></div><div id="event-list" class="event-list"><p class="empty">正在读取事件…</p></div><button id="older" class="secondary" hidden>更早的事件</button></section>
+  <section id="events" class="section"><div class="section-heading"><div><p class="eyebrow">LITTLE MOMENTS</p><h2>最近事件</h2></div><button id="refresh" class="secondary">刷新事件</button></div><div class="media-tools"><label class="media-check"><input id="select-all-events" type="checkbox">全选已加载媒体</label><button id="delete-selected-events" type="button" class="danger" disabled>删除选中 (0)</button></div><div id="event-list" class="event-list"><p class="empty">正在读取事件…</p></div><button id="older" class="secondary" hidden>更早的事件</button></section>
   <section id="settings" class="section"><div class="section-heading"><div><p class="eyebrow">MAKE IT YOURS</p><h2>守护设置</h2></div><span class="muted">更改后请保存</span></div>
   <form id="settings-form">
     <div class="settings-grid">
@@ -42,5 +42,5 @@
   <footer>Million Pound · 连续采集，分段判断。抽帧可能遗漏短暂行为，请结合截图判断。</footer>
 </main>
 <template id="window-template"><div class="window-row"><label>开始<input type="time" class="window-start" required></label><span aria-hidden="true">—</span><label>结束<input type="time" class="window-end" required></label><button type="button" class="quiet remove-window" aria-label="删除该监控时段">删除</button></div></template>
-<template id="event-template"><article class="card event"><div class="event-header"><h3></h3><span class="badge"></span></div><time></time><p class="description"></p><p class="event-meta muted"></p><div class="event-images"></div></article></template>
+<template id="event-template"><article class="card event"><div class="event-header"><h3></h3><span class="badge"></span></div><time></time><p class="description"></p><p class="event-meta muted"></p><div class="event-images"></div><div class="media-tools"><label class="media-check"><input type="checkbox" class="event-select">选择此事件媒体</label><button type="button" class="danger delete-event-media">删除图片/视频</button></div></article></template>
 </body></html>

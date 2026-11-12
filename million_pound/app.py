@@ -1,11 +1,12 @@
 import asyncio
 import hmac
-import re
+import sqlite3
 import time
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Annotated, Literal
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -18,11 +19,10 @@ from .media import MediaError
 from .models import ModelError, send_bark
 from .monitor import Monitor
 from .security import Security
-from .store import Store
+from .store import IMAGE_NAME, Store
 
 
 ASSETS = Path(__file__).parent / "web"
-IMAGE_NAME = re.compile(r"^[0-9a-f]{32}-[0-2]\.jpg$")
 
 
 class Login(BaseModel):
@@ -32,6 +32,10 @@ class Login(BaseModel):
 class PasswordChange(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=11, max_length=256)
+
+
+class MediaDelete(BaseModel):
+    ids: list[Annotated[int, Field(strict=True, ge=1, le=2**63 - 1)]] = Field(min_length=1, max_length=5000)
 
 
 def create_app(root: Path = ROOT):
@@ -180,6 +184,17 @@ def create_app(root: Path = ROOT):
     async def events(request: Request, before: int | None = None):
         items = request.app.state.store.recent(before)
         return {"items": items, "next_before": items[-1]["id"] if len(items) == 50 else None}
+
+    @app.delete("/api/{collection}/media", dependencies=[Depends(authenticated)])
+    async def delete_media(collection: Literal["activities", "events"], body: MediaDelete, request: Request):
+        try:
+            return request.app.state.store.delete_media(collection, body.ids, root / "data" / "images")
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        except (OSError, sqlite3.Error):
+            raise HTTPException(500, "媒体删除未完成，请重试并检查磁盘和权限") from None
 
     @app.get("/api/activities", dependencies=[Depends(authenticated)])
     async def activities(request: Request, before: int | None = Query(default=None, ge=1),

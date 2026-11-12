@@ -189,13 +189,21 @@ class Monitor:
             fast = Path(work) / "fast.mp4"
             self.status["phase"] = "deciding"
             await media.accelerate(raw, fast, cfg.speed, cfg.sample_fps)
-            center = self.store.get_activity(activity_id)["images"][0]
+            images = self.store.get_activity(activity_id)["images"]
+            if not images:
+                self.store.update_activity(activity_id, "cancelled", message="媒体已删除，本段未继续分析")
+                self.status["phase"] = "complete"
+                return
+            center = images[0]
             prior = previous_pets(self.store.activities(before=activity_id), started)
             result = await self.models.decide(cfg, fast, self.images / center, prior)
-            fast.replace((self.images / center).with_suffix(".mp4"))
             scores = result["scores"]
             self.store.update_activity(activity_id, "done", pets=result["pets"])
             self.status["last_scores"] = scores
+            if not self.store.get_activity(activity_id)["images"]:
+                self.status["phase"] = "complete"
+                return
+            fast.replace((self.images / center).with_suffix(".mp4"))
             candidates = [key for key, score in scores.items() if score >= 0.7]
             if not candidates:
                 self.status["phase"] = "no_event"
@@ -204,7 +212,12 @@ class Monitor:
             prefix = center.rsplit("-", 1)[0]
             paths = [self.images / f"{prefix}-{i}.jpg" for i in range(3)]
             for i in (0, 2):
-                await media.screenshot(raw, paths[i], offsets[i])
+                await media.screenshot(raw, Path(work) / paths[i].name, offsets[i])
+            if not self.store.get_activity(activity_id)["images"]:
+                self.status["phase"] = "complete"
+                return
+            for i in (0, 2):
+                (Path(work) / paths[i].name).replace(paths[i])
             eligible = time.time() - self.store.meta("last_review") >= cfg.review_interval
             ids = {key: self.store.add(started.isoformat(), key, scores[key], [p.name for p in paths], offsets,
                                        "reviewing" if eligible else "unreviewed") for key in candidates}
@@ -234,7 +247,7 @@ class Monitor:
                                       pet=event.pet, notification=notification)
                     if notification == "sending":
                         image_url = None
-                        if cfg.public_url:
+                        if cfg.public_url and self.store.get(event_id)["images"]:
                             expiry = int(time.time()) + 3600
                             name = paths[1].name
                             sig = self.security.image_signature(name, expiry)

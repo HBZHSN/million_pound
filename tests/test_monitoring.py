@@ -339,6 +339,103 @@ class WebTests(LocalSetup):
         self.assertIsNone(self.client.get("/api/activities").json()["items"][0]["video"])
         store.db.close()
 
+    def media_fixture(self, prefix):
+        store = Store(self.root / "data")
+        now = datetime.now(timezone.utc).isoformat()
+        names = [prefix * 32 + f"-{index}.jpg" for index in range(3)]
+        for name in names:
+            (self.root / "data" / "images" / name).write_bytes(b"private-image")
+        (self.root / "data" / "images" / names[1]).with_suffix(".mp4").write_bytes(b"private-video")
+        activity_id = store.add_activity(now, now)
+        store.activity_images(activity_id, [names[1]], [30])
+        store.update_activity(activity_id, "done", pets={"dog": {"activity": "eating"}}, message="保留活动文字")
+        event_ids = [store.add(now, kind, .9, names, [6, 30, 54], "confirmed") for kind in ("eating", "destruction")]
+        for ident in event_ids:
+            store.update(ident, status="confirmed", description="保留事件文字", pet="dog", notification="sent")
+        store.db.close()
+        return activity_id, event_ids, names
+
+    def test_single_and_batch_media_deletion_cleans_both_pages_and_shared_links(self):
+        headers = self.login()
+        for collection, prefixes in (("activities", ("1",)), ("events", ("2", "3"))):
+            with self.subTest(collection=collection):
+                fixtures = [self.media_fixture(prefix) for prefix in prefixes]
+                unrelated = self.media_fixture("f")
+                ids = [activity if collection == "activities" else events[0] for activity, events, _ in fixtures]
+                result = self.client.request("DELETE", f"/api/{collection}/media", json={"ids": ids}, headers=headers)
+                self.assertEqual(result.status_code, 200, result.text)
+                self.assertCountEqual(result.json()["activities"], [row[0] for row in fixtures])
+                self.assertCountEqual(result.json()["events"], [ident for row in fixtures for ident in row[1]])
+                store = Store(self.root / "data")
+                for activity, events, names in fixtures:
+                    saved = store.get_activity(activity)
+                    self.assertEqual((saved["images"], saved["frame_offsets"]), ([], []))
+                    self.assertEqual((saved["message"], saved["status"]), ("保留活动文字", "done"))
+                    self.assertEqual(self.client.get(f"/api/activities/{activity}/images/0").status_code, 404)
+                    self.assertEqual(self.client.get(f"/api/activities/{activity}/video").status_code, 404)
+                    for ident in events:
+                        saved = store.get(ident)
+                        self.assertEqual((saved["images"], saved["frame_offsets"]), ([], []))
+                        self.assertEqual((saved["description"], saved["notification"]), ("保留事件文字", "sent"))
+                        self.assertEqual(self.client.get(f"/api/events/{ident}/images/0").status_code, 404)
+                    for name in names:
+                        expiry = int(time.time()) + 600
+                        signature = self.security.image_signature(name, expiry)
+                        self.assertEqual(self.client.get(f"/shared/{name}?expires={expiry}&sig={signature}").status_code, 404)
+                        self.assertFalse((self.root / "data" / "images" / name).exists())
+                    self.assertFalse((self.root / "data" / "images" / names[1]).with_suffix(".mp4").exists())
+                self.assertEqual(self.client.get(f"/api/activities/{unrelated[0]}/video").status_code, 200)
+                self.assertEqual(self.client.get(f"/api/events/{unrelated[1][0]}/images/0").status_code, 200)
+                self.assertEqual(self.client.request("DELETE", f"/api/{collection}/media", json={"ids": ids + ids}, headers=headers).status_code, 200)
+                store.db.close()
+
+    def test_media_deletion_checks_authentication_csrf_ids_and_file_paths(self):
+        activity, events, names = self.media_fixture("4")
+        for collection, ident in (("activities", activity), ("events", events[0])):
+            path, payload = f"/api/{collection}/media", {"ids": [ident]}
+            self.assertEqual(self.client.request("DELETE", path, json=payload).status_code, 401)
+        headers = self.login()
+        for collection, ident in (("activities", activity), ("events", events[0])):
+            path, payload = f"/api/{collection}/media", {"ids": [ident]}
+            self.assertEqual(self.client.request("DELETE", path, json=payload).status_code, 403)
+            self.assertEqual(self.client.request("DELETE", path, json=payload, headers={**headers, "Origin": "https://evil.example"}).status_code, 403)
+            for invalid in ([], [0], [-1], [True], ["1"], [2**63], [1] * 5001):
+                self.assertEqual(self.client.request("DELETE", path, json={"ids": invalid}, headers=headers).status_code, 422)
+            self.assertEqual(self.client.request("DELETE", path, json={"ids": [ident, 999999]}, headers=headers).status_code, 404)
+        self.assertTrue((self.root / "data" / "images" / names[1]).exists())
+        outside = self.root / "data" / "outside.jpg"
+        outside.write_bytes(b"must-stay")
+        store = Store(self.root / "data")
+        store.activity_images(activity, ["../outside.jpg"], [1])
+        response = self.client.request("DELETE", "/api/activities/media", json={"ids": [activity]}, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(outside.read_bytes(), b"must-stay")
+        self.assertEqual(store.get_activity(activity)["images"], [])
+        store.db.close()
+
+    def test_media_deletion_handles_missing_files_and_reports_io_failures_without_clearing_references(self):
+        activity, events, names = self.media_fixture("5")
+        headers = self.login()
+        payload = {"ids": [events[0]]}
+        with patch("million_pound.store.Path.unlink", side_effect=PermissionError("private-path")):
+            response = self.client.request("DELETE", "/api/events/media", json=payload, headers=headers)
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("private-path", response.text)
+        self.assertEqual(self.client.get(f"/api/events/{events[0]}/images/0").status_code, 200)
+        (self.root / "data" / "images" / names[0]).unlink()
+        self.assertEqual(self.client.request("DELETE", "/api/events/media", json=payload, headers=headers).status_code, 200)
+        self.assertEqual(self.client.get(f"/api/activities/{activity}/video").status_code, 404)
+
+    def test_media_deletion_waits_for_the_initial_screenshot(self):
+        store = Store(self.root / "data")
+        now = datetime.now(timezone.utc).isoformat()
+        activity = store.add_activity(now, now)
+        headers = self.login()
+        response = self.client.request("DELETE", "/api/activities/media", json={"ids": [activity]}, headers=headers)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(store.get_activity(activity)["status"], "pending")
+        store.db.close()
+
     def test_password_change_checks_authentication_and_revokes_old_sessions(self):
         payload = {"current_password": PASSWORD, "new_password": "new-pass-11"}
         self.assertEqual(self.client.put("/api/password", json=payload).status_code, 401)
@@ -789,6 +886,48 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(list(self.monitor.images.glob("*.mp4")))
         self.assertFalse(list((self.root / "data").glob("clip-*")))
         self.monitor.models.review.assert_not_awaited()
+
+    async def test_deleting_media_during_analysis_does_not_recreate_files_or_share_images(self):
+        decision = self.monitor.models.decide.return_value
+        reviews = self.monitor.models.review.return_value
+        for stage in ("accelerate", "decide", "screenshot", "review"):
+            with self.subTest(stage=stage):
+                def remove():
+                    activity = self.store.activities()[0]
+                    self.store.delete_media("activities", [activity["id"]], self.monitor.images)
+
+                async def accelerate(source, target, *args):
+                    target.write_bytes(b"video")
+                    if stage == "accelerate":
+                        remove()
+
+                async def screenshot(source, target, *args):
+                    target.write_bytes(b"image")
+                    if stage == "screenshot":
+                        remove()
+
+                async def decide(*args):
+                    if stage == "decide":
+                        remove()
+                    return decision
+
+                async def review(*args):
+                    remove()
+                    return reviews
+
+                self.mocks[0].side_effect = accelerate
+                self.mocks[1].side_effect = screenshot
+                self.monitor.models.decide.side_effect = decide
+                self.monitor.models.review.side_effect = review
+                activity = await self.analyze()
+                self.assertEqual(self.store.get_activity(activity)["images"], [])
+                self.assertEqual(list(self.monitor.images.iterdir()), [])
+                self.assertFalse(list((self.root / "data").glob("clip-*")))
+                for event in self.store.recent():
+                    self.assertEqual(event["images"], [])
+                if stage == "review":
+                    self.mocks[-1].assert_awaited_once()
+                    self.assertIsNone(self.mocks[-1].call_args.args[-1])
 
     async def test_failed_review_is_recorded_without_notification(self):
         self.monitor.models.review.side_effect = ModelError("模型失败")

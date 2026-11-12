@@ -1,5 +1,5 @@
 "use strict";
-import {$, action, api, formatTime, initSession, notice, petNames} from "/assets/client.js";
+import {$, action, api, deleteMedia, formatTime, initSession, notice, petNames} from "/assets/client.js";
 import {PETS, activityCandidate, activityKey, durationLabel, groupActivities, timelineLayout, timelinePhotos} from "/assets/timeline.js";
 
 const statuses = {pending: "正在判断", error: "判断失败", skipped: "积压未判断", cancelled: "已中断"};
@@ -9,6 +9,7 @@ const today = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10
 const records = new Map();
 const compactTimeline = window.matchMedia("(max-width:760px)");
 let before = null, generation = 0, filter = "", labels = {}, episodesById = new Map(), clustersById = new Map(), photosById = new Map(), detail = null, photoIndex = 0, photoTrigger = null, loadingOlder = false;
+let deletingMedia = false;
 $("#day").value = today();
 
 function labelFor(key) {
@@ -99,6 +100,7 @@ function renderTimeline() {
 }
 
 async function loadActivities(older = false) {
+  if (deletingMedia) return;
   if (!$("#day").value) { notice("请选择日期", true); return; }
   const revision = ++generation;
   const nextFilter = $("#day").value;
@@ -113,7 +115,7 @@ async function loadActivities(older = false) {
   if (changed || missed || older || !records.size) before = result.next_before;
   filter = nextFilter; labels = result.labels;
   for (const item of result.items) records.set(item.id, item);
-  if (!$("#activity-details").open && !$("#interval-activities").matches(":popover-open")) {
+  if (!$("#activity-details").open && !$("#media-manager").open && !$("#interval-activities").matches(":popover-open")) {
     renderTimeline();
     autoLoadOlder();
   }
@@ -121,7 +123,7 @@ async function loadActivities(older = false) {
 
 function stopVideo() {
   const video = $("#detail-video");
-  video.pause(); video.removeAttribute("src"); video.load(); video.hidden = true;
+  video.pause(); video.removeAttribute("src"); video.removeAttribute("poster"); video.load(); video.hidden = true;
 }
 
 function showPhoto(imageIndex = 0) {
@@ -134,7 +136,7 @@ function showPhoto(imageIndex = 0) {
   if (hasImage) {
     link.href = "/api/activities/" + item.id + "/images/" + imageIndex;
     image.src = link.href; image.alt = PETS[pet] + "在" + formatTime(item.started_at) + "这段录像中的画面";
-  } else image.removeAttribute("src");
+  } else { image.removeAttribute("src"); link.removeAttribute("href"); }
   if (item.video) {
     video.poster = link.href; video.src = item.video; video.hidden = false; link.hidden = true;
     video.play().catch(() => {});
@@ -146,7 +148,8 @@ function showPhoto(imageIndex = 0) {
   $("#photo-position").value = photoIndex;
   $("#photo-position").disabled = detail.records.length === 1;
   const when = Date.parse(item.started_at) + (item.frame_offsets[imageIndex] || 0) * 1000;
-  $("#detail-caption").textContent = "采集约 " + formatTime(when) + (item.video ? " · 加速录像，可暂停或拖动进度核对动作" : " · 本段未保存录像，可点击图片查看原图");
+  $("#detail-caption").textContent = "采集约 " + formatTime(when) + (item.video ? " · 加速录像，可暂停或拖动进度核对动作" : hasImage ? " · 本段未保存录像，可点击图片查看原图" : " · 媒体已删除或过期");
+  $("#delete-current-media").disabled = deletingMedia || (!hasImage && !item.video);
   $("#photo-position").setAttribute("aria-valuetext", "第 " + (photoIndex + 1) + " 张画面，采集约 " + formatTime(when));
   const decision = item.pets[pet];
   const legacy = item.status === "done" && decision?.activity === "sleeping" && !decision.visibility;
@@ -179,12 +182,59 @@ function openDetails(episode, imageIndex = 0) {
   if ($("#interval-activities").matches(":popover-open")) $("#interval-activities").hidePopover();
   photoTrigger = document.activeElement?.dataset.gridPhoto;
   detail = episode; photoIndex = episode.records.length - 1;
+  $("#activity-details .media-message").hidden = true;
   $("#detail-pet").textContent = PETS[episode.pet] + "的小日常";
   $("#activity-details").dataset.pet = episode.pet;
   $("#detail-title").textContent = episode.key ? labelFor(episode.key) + " · " + durationLabel(episode.end - episode.start) : "当时画面";
   $("#detail-period").textContent = formatTime(episode.start) + " — " + formatTime(episode.end);
   $("#detail-count").textContent = "合并了 " + episode.records.length + " 次观察。活动根据录像判断，画面供你核对。";
   showPhoto(imageIndex); $("#activity-details").showModal();
+}
+
+function updateMediaSelection() {
+  const boxes = [...document.querySelectorAll("#media-records input")];
+  const count = boxes.filter(box => box.checked).length;
+  const all = $("#select-all-activities");
+  all.checked = boxes.length > 0 && count === boxes.length;
+  all.indeterminate = count > 0 && count < boxes.length;
+  all.disabled = deletingMedia || !boxes.length;
+  $("#delete-selected-activities").textContent = "删除选中 (" + count + ")";
+  $("#delete-selected-activities").disabled = deletingMedia || !count;
+}
+
+function renderMediaManager() {
+  const items = [...records.values()].filter(item => item.images.length || item.video).sort((a, b) => b.id - a.id);
+  const list = $("#media-records");
+  list.replaceChildren(...items.map(item => {
+    const label = document.createElement("label"); label.className = "media-check";
+    const box = document.createElement("input"); box.type = "checkbox"; box.value = item.id;
+    label.append(box);
+    if (item.images.length) {
+      const image = document.createElement("img"); image.src = "/api/activities/" + item.id + "/images/0";
+      image.alt = ""; image.loading = "lazy"; image.addEventListener("error", () => image.remove()); label.append(image);
+    }
+    const text = document.createElement("span"), info = document.createElement("small");
+    text.textContent = formatTime(item.started_at) + " — " + clock(item.ended_at, true);
+    info.textContent = item.images.length + " 张截图" + (item.video ? " · 视频" : "");
+    text.append(info); label.append(text); return label;
+  }));
+  if (!items.length) list.textContent = "已加载的记录没有可删除的图片或视频。";
+  updateMediaSelection();
+}
+
+async function removeActivityMedia(ids) {
+  deletingMedia = true; generation++;
+  try {
+    const result = await deleteMedia("activities", ids);
+    if (!result) return;
+    const affected = new Set(result.activities);
+    for (const item of [...records.values(), ...(detail?.records || [])]) {
+      if (affected.has(item.id)) { item.images = []; item.frame_offsets = []; item.video = null; }
+    }
+    renderTimeline();
+    if ($("#media-manager").open) renderMediaManager();
+    if ($("#activity-details").open) showPhoto();
+  } finally { deletingMedia = false; }
 }
 
 async function loadStatus() {
@@ -205,7 +255,7 @@ async function loadOlder() {
 }
 
 function autoLoadOlder() {
-  if (!before || loadingOlder || $("#activity-details").open || $("#interval-activities").matches(":popover-open")) return;
+  if (!before || loadingOlder || deletingMedia || $("#activity-details").open || $("#media-manager").open || $("#interval-activities").matches(":popover-open")) return;
   if (olderButton.getBoundingClientRect().top > window.innerHeight + 600) return;
   action(olderButton, loadOlder);
 }
@@ -218,7 +268,7 @@ window.addEventListener("scroll", () => {
 }, {passive: true});
 window.addEventListener("resize", autoLoadOlder);
 compactTimeline.addEventListener("change", () => {
-  if (!$("#activity-details").open && !$("#interval-activities").matches(":popover-open")) renderTimeline();
+  if (!$("#activity-details").open && !$("#media-manager").open && !$("#interval-activities").matches(":popover-open")) renderTimeline();
 });
 
 $("#activity-list").addEventListener("click", event => {
@@ -273,6 +323,25 @@ $("#detail-image").addEventListener("error", () => {
 $("#previous-photo").addEventListener("click", () => { photoIndex--; showPhoto(); });
 $("#next-photo").addEventListener("click", () => { photoIndex++; showPhoto(); });
 $("#photo-position").addEventListener("change", event => { photoIndex = Number(event.target.value); showPhoto(); });
+$("#manage-media").addEventListener("click", () => {
+  renderMediaManager(); $("#media-manager .media-message").hidden = true; $("#media-manager").showModal();
+});
+$("#close-media-manager").addEventListener("click", () => $("#media-manager").close());
+$("#media-manager").addEventListener("close", () => { renderTimeline(); autoLoadOlder(); });
+$("#media-records").addEventListener("change", updateMediaSelection);
+$("#select-all-activities").addEventListener("change", event => {
+  for (const box of document.querySelectorAll("#media-records input")) box.checked = event.target.checked;
+  updateMediaSelection();
+});
+$("#delete-selected-activities").addEventListener("click", event => {
+  const ids = [...document.querySelectorAll("#media-records input:checked")].map(box => Number(box.value));
+  action(event.currentTarget, () => removeActivityMedia(ids)).then(updateMediaSelection);
+});
+$("#delete-current-media").addEventListener("click", event => {
+  action(event.currentTarget, () => removeActivityMedia([detail.records[photoIndex].id])).then(() => {
+    const item = detail.records[photoIndex]; $("#delete-current-media").disabled = !item.images.length && !item.video;
+  });
+});
 $("#timeline-scale").addEventListener("change", () => { renderTimeline(); autoLoadOlder(); });
 $("#day").addEventListener("change", () => loadActivities().catch(error => notice(error.message, true)));
 for (const [selector, offset] of [["#previous-day", -1], ["#next-day", 1]]) $(selector).addEventListener("click", () => {
@@ -292,7 +361,7 @@ $("#logout").addEventListener("click", event => action(event.target, async () =>
       refreshing = true;
       try {
         await Promise.all([loadStatus(), loadingOlder ? Promise.resolve() : loadActivities()]);
-        if ($("#day").value) notice("");
+        if ($("#day").value && !$("#activity-details").open && !$("#media-manager").open) notice("");
       }
       catch (error) { notice(error.message, true); }
       finally { refreshing = false; }

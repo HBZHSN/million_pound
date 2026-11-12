@@ -1,7 +1,11 @@
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+
+IMAGE_NAME = re.compile(r"^[0-9a-f]{32}-[0-2]\.jpg$")
 
 
 class Store:
@@ -105,6 +109,34 @@ class Store:
         for row in rows:
             events.setdefault(row["occurred_at"], []).append({"type": row["type"], "pet": row["pet"]})
         return events
+
+    def delete_media(self, collection, ids, images: Path):
+        table = {"activities": "activities", "events": "events"}[collection]
+        ids = set(ids)
+        rows = [self.decode(row) for row in self.db.execute(
+            f"SELECT * FROM {table} WHERE id IN ({','.join('?' for _ in ids)})", tuple(ids))]
+        if len(rows) != len(ids):
+            raise LookupError("部分记录不存在，请刷新后重试")
+        if collection == "activities" and any(row["status"] == "pending" and not row["images"] for row in rows):
+            raise ValueError("有截图仍在生成，请稍后重试")
+        prefixes = {name.rsplit("-", 1)[0] for row in rows for name in row["images"] if IMAGE_NAME.fullmatch(name)}
+        affected = {"activities": [], "events": []}
+        for target in affected:
+            for row in self.db.execute(f"SELECT id,images FROM {target} WHERE images != '[]'"):
+                if (target == collection and row["id"] in ids) or any(
+                    IMAGE_NAME.fullmatch(name) and name.rsplit("-", 1)[0] in prefixes for name in json.loads(row["images"])
+                ):
+                    affected[target].append(row["id"])
+        # 同段截图和录像共用前缀，清理全部副本以免从另一页面或分享链接访问。
+        for prefix in prefixes:
+            for index in range(3):
+                for suffix in ("jpg", "mp4"):
+                    (images / f"{prefix}-{index}.{suffix}").unlink(missing_ok=True)
+        with self.db:
+            for target, selected in affected.items():
+                self.db.executemany(f"UPDATE {target} SET images='[]',frame_offsets='[]' WHERE id=?",
+                                    [(ident,) for ident in selected])
+        return affected
 
     def meta(self, key: str) -> float:
         row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
