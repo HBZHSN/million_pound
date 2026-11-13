@@ -27,13 +27,10 @@
 <main class="diary-shell">
   <section class="diary-intro">
     <p class="eyebrow">THEIR LITTLE EVERYDAY</p><h1>百万和英镑的一天</h1>
-    <div class="diary-toolbar">
-      <div class="day-controls">
-        <button id="previous-day" type="button" class="icon-button" aria-label="前一天"><svg><use href="#icon-arrow"/></svg></button>
-        <label class="day-picker"><span class="visually-hidden">选择日期</span><input id="day" type="date" required></label>
-        <button id="next-day" type="button" class="icon-button" aria-label="后一天"><svg class="flip"><use href="#icon-arrow"/></svg></button>
-      </div>
-      <button id="manage-media" type="button" class="secondary">批量删除图片/视频</button>
+    <div class="day-controls">
+      <button id="previous-day" type="button" class="icon-button" aria-label="前一天"><svg><use href="#icon-arrow"/></svg></button>
+      <label class="day-picker"><span class="visually-hidden">选择日期</span><input id="day" type="date" required></label>
+      <button id="next-day" type="button" class="icon-button" aria-label="后一天"><svg class="flip"><use href="#icon-arrow"/></svg></button>
     </div>
     <p class="diary-date"><span id="selected-date"></span><span class="date-separator" aria-hidden="true">·</span><span id="capture-status" class="capture-status" aria-live="polite">正在连接</span></p>
   </section>
@@ -66,16 +63,6 @@
     <p id="detail-message" class="notice" hidden></p><p id="detail-count" class="footnote"></p>
     <div class="media-tools"><button id="delete-current-media" type="button" class="danger">删除本段图片/视频</button></div>
     <p class="notice media-message" role="status" aria-live="polite" hidden></p>
-  </div>
-</dialog>
-<dialog id="media-manager" class="activity-dialog" aria-labelledby="media-title">
-  <div class="detail-card">
-    <button id="close-media-manager" class="icon-button detail-close" type="button" aria-label="关闭媒体管理"><svg><use href="#icon-close"/></svg></button>
-    <h2 id="media-title">删除图片和视频</h2>
-    <p class="footnote">以下为所选日期已加载的片段，包含未在时间线展示的画面。删除会同步清理关联事件的媒体，文字记录保留。</p>
-    <div class="media-tools"><label class="media-check"><input id="select-all-activities" type="checkbox">全选已加载媒体</label><button id="delete-selected-activities" type="button" class="danger" disabled>删除选中 (0)</button></div>
-    <p class="notice media-message" role="status" aria-live="polite" hidden></p>
-    <div id="media-records" class="media-records"></div>
   </div>
 </dialog>
 </body></html>

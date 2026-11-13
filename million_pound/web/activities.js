@@ -115,7 +115,7 @@ async function loadActivities(older = false) {
   if (changed || missed || older || !records.size) before = result.next_before;
   filter = nextFilter; labels = result.labels;
   for (const item of result.items) records.set(item.id, item);
-  if (!$("#activity-details").open && !$("#media-manager").open && !$("#interval-activities").matches(":popover-open")) {
+  if (!$("#activity-details").open && !$("#interval-activities").matches(":popover-open")) {
     renderTimeline();
     autoLoadOlder();
   }
@@ -191,37 +191,6 @@ function openDetails(episode, imageIndex = 0) {
   showPhoto(imageIndex); $("#activity-details").showModal();
 }
 
-function updateMediaSelection() {
-  const boxes = [...document.querySelectorAll("#media-records input")];
-  const count = boxes.filter(box => box.checked).length;
-  const all = $("#select-all-activities");
-  all.checked = boxes.length > 0 && count === boxes.length;
-  all.indeterminate = count > 0 && count < boxes.length;
-  all.disabled = deletingMedia || !boxes.length;
-  $("#delete-selected-activities").textContent = "删除选中 (" + count + ")";
-  $("#delete-selected-activities").disabled = deletingMedia || !count;
-}
-
-function renderMediaManager() {
-  const items = [...records.values()].filter(item => item.images.length || item.video).sort((a, b) => b.id - a.id);
-  const list = $("#media-records");
-  list.replaceChildren(...items.map(item => {
-    const label = document.createElement("label"); label.className = "media-check";
-    const box = document.createElement("input"); box.type = "checkbox"; box.value = item.id;
-    label.append(box);
-    if (item.images.length) {
-      const image = document.createElement("img"); image.src = "/api/activities/" + item.id + "/images/0";
-      image.alt = ""; image.loading = "lazy"; image.addEventListener("error", () => image.remove()); label.append(image);
-    }
-    const text = document.createElement("span"), info = document.createElement("small");
-    text.textContent = formatTime(item.started_at) + " — " + clock(item.ended_at, true);
-    info.textContent = item.images.length + " 张截图" + (item.video ? " · 视频" : "");
-    text.append(info); label.append(text); return label;
-  }));
-  if (!items.length) list.textContent = "已加载的记录没有可删除的图片或视频。";
-  updateMediaSelection();
-}
-
 async function removeActivityMedia(ids) {
   deletingMedia = true; generation++;
   try {
@@ -232,7 +201,6 @@ async function removeActivityMedia(ids) {
       if (affected.has(item.id)) { item.images = []; item.frame_offsets = []; item.video = null; }
     }
     renderTimeline();
-    if ($("#media-manager").open) renderMediaManager();
     if ($("#activity-details").open) showPhoto();
   } finally { deletingMedia = false; }
 }
@@ -255,7 +223,7 @@ async function loadOlder() {
 }
 
 function autoLoadOlder() {
-  if (!before || loadingOlder || deletingMedia || $("#activity-details").open || $("#media-manager").open || $("#interval-activities").matches(":popover-open")) return;
+  if (!before || loadingOlder || deletingMedia || $("#activity-details").open || $("#interval-activities").matches(":popover-open")) return;
   if (olderButton.getBoundingClientRect().top > window.innerHeight + 600) return;
   action(olderButton, loadOlder);
 }
@@ -268,7 +236,7 @@ window.addEventListener("scroll", () => {
 }, {passive: true});
 window.addEventListener("resize", autoLoadOlder);
 compactTimeline.addEventListener("change", () => {
-  if (!$("#activity-details").open && !$("#media-manager").open && !$("#interval-activities").matches(":popover-open")) renderTimeline();
+  if (!$("#activity-details").open && !$("#interval-activities").matches(":popover-open")) renderTimeline();
 });
 
 $("#activity-list").addEventListener("click", event => {
@@ -323,20 +291,6 @@ $("#detail-image").addEventListener("error", () => {
 $("#previous-photo").addEventListener("click", () => { photoIndex--; showPhoto(); });
 $("#next-photo").addEventListener("click", () => { photoIndex++; showPhoto(); });
 $("#photo-position").addEventListener("change", event => { photoIndex = Number(event.target.value); showPhoto(); });
-$("#manage-media").addEventListener("click", () => {
-  renderMediaManager(); $("#media-manager .media-message").hidden = true; $("#media-manager").showModal();
-});
-$("#close-media-manager").addEventListener("click", () => $("#media-manager").close());
-$("#media-manager").addEventListener("close", () => { renderTimeline(); autoLoadOlder(); });
-$("#media-records").addEventListener("change", updateMediaSelection);
-$("#select-all-activities").addEventListener("change", event => {
-  for (const box of document.querySelectorAll("#media-records input")) box.checked = event.target.checked;
-  updateMediaSelection();
-});
-$("#delete-selected-activities").addEventListener("click", event => {
-  const ids = [...document.querySelectorAll("#media-records input:checked")].map(box => Number(box.value));
-  action(event.currentTarget, () => removeActivityMedia(ids)).then(updateMediaSelection);
-});
 $("#delete-current-media").addEventListener("click", event => {
   action(event.currentTarget, () => removeActivityMedia([detail.records[photoIndex].id])).then(() => {
     const item = detail.records[photoIndex]; $("#delete-current-media").disabled = !item.images.length && !item.video;
@@ -361,7 +315,7 @@ $("#logout").addEventListener("click", event => action(event.target, async () =>
       refreshing = true;
       try {
         await Promise.all([loadStatus(), loadingOlder ? Promise.resolve() : loadActivities()]);
-        if ($("#day").value && !$("#activity-details").open && !$("#media-manager").open) notice("");
+        if ($("#day").value && !$("#activity-details").open) notice("");
       }
       catch (error) { notice(error.message, true); }
       finally { refreshing = false; }
