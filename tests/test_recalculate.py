@@ -165,3 +165,17 @@ class RecalculationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             recalculate(self.data)
         self.assertEqual(self.rows(), original)
+
+    def test_new_activity_options_are_accepted_and_continued_in_recalculation(self):
+        ids = []
+        for index, activity in enumerate(("grooming", "on_sofa", "on_table", "on_chair")):
+            first = self.add(index * 30, observation(activity, .8, activity))
+            low = self.add(index * 30 + 10, observation("uncertain", .3, activity))
+            ids.append((activity, first, low))
+        result = recalculate(self.data)
+        self.assertEqual(result["activity_changed_records"], 4)
+        for activity, first, low in ids:
+            self.assertEqual(self.store.get_activity(first)["pets"]["dog"]["activity"], activity)
+            decision = self.store.get_activity(low)["pets"]["dog"]
+            self.assertEqual(decision["activity"], activity)
+            self.assertTrue(decision["continued"])

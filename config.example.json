@@ -6,7 +6,14 @@
   "speed": 6,
   "review_interval": 0,
   "windows": [],
-  "event_modes": {"eating": "record", "destruction": "notify", "toileting": "notify"},
+  "event_modes": {
+    "eating": "record",
+    "destruction": "notify",
+    "toileting": "notify",
+    "on_sofa": "off",
+    "on_table": "off",
+    "on_chair": "off"
+  },
   "model_url": "http://127.0.0.1:18080",
   "model_key": "",
   "bark_url": "",

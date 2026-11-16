@@ -15,7 +15,7 @@ $("#day").value = today();
 function labelFor(key) {
   if (typeof key !== "string") return "未知";
   if (key.startsWith(SUSPECT_PREFIX)) key = key.slice(SUSPECT_PREFIX.length);
-  return key === "unknown" ? "未知" : key === "walking" ? "走动" : labels[key] || "未知";
+  return key === "unknown" ? "未知" : key === "sleeping" ? "休息" : key === "walking" ? "走动" : labels[key] || "未知";
 }
 
 function renderTimeline() {
@@ -159,7 +159,7 @@ function showPhoto(imageIndex = 0) {
   const candidate = suspected || uncertain ? activityCandidate(decision) : null;
   let observation = statuses[item.status] || "判断不清";
   if (item.status === "done" && decision) {
-    observation = legacy ? "旧模型曾判断：睡觉（未做入镜检查）" : "这次观察：" + (key ? labelFor(key) : "活动未确认");
+    observation = legacy ? "旧模型曾判断：休息（未做入镜检查）" : "这次观察：" + (key ? labelFor(key) : "活动未确认");
     if (suspected) {
       observation += "（" + (uncertain ? "模型输出不确定，取最高分的非未知活动" : "未达确认条件") + "）";
     }
@@ -174,7 +174,7 @@ function showPhoto(imageIndex = 0) {
     const identity = decision.visibility === "present" ? "已入镜" : decision.visibility === "absent" ? "未检测到入镜" : "入镜不确定";
     $("#detail-identity").textContent = "入镜检查：" + identity + " · 模型分数 " + Math.round(decision.visibility_confidence * 100) + "%";
   } else if (decision) $("#detail-identity").textContent = "入镜检查：旧版未执行，原判断仅供结合画面核对";
-  const message = legacy ? "这条旧记录没有独立检查宠物是否入镜，原来的睡觉判断尚未核验，请结合照片查看。" : item.message;
+  const message = legacy ? "这条旧记录没有独立检查宠物是否入镜，原来的休息判断尚未核验，请结合照片查看。" : item.message;
   $("#detail-message").textContent = petNames(message); $("#detail-message").hidden = !message;
 }
 

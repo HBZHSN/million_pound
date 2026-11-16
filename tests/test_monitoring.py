@@ -77,6 +77,22 @@ class LocalTests(LocalSetup):
         self.assertEqual(config.current.sample_fps, 2)
         self.assertEqual(config.current.model_key, "private-key")
         self.assertNotIn("sample_interval", config.current.model_dump())
+        self.assertEqual(config.current.event_modes, {
+            "eating": "record", "destruction": "notify", "toileting": "notify",
+            "on_sofa": "off", "on_table": "off", "on_chair": "off",
+        })
+
+    def test_legacy_event_modes_migrate_with_furniture_alerts_off(self):
+        (self.root / "config.json").write_text(json.dumps({
+            "model_key": "private-key",
+            "event_modes": {"eating": "notify", "destruction": "record", "toileting": "notify"},
+        }))
+        config = Config(self.root)
+        self.assertEqual(config.current.model_key, "private-key")
+        self.assertEqual(config.current.event_modes, {
+            "eating": "notify", "destruction": "record", "toileting": "notify",
+            "on_sofa": "off", "on_table": "off", "on_chair": "off",
+        })
 
     def test_password_sessions_and_signed_images(self):
         sec = self.security
@@ -509,6 +525,29 @@ class WebTests(LocalSetup):
         self.assertEqual(page["items"][0]["id"], ids[0])
         self.assertCountEqual(page["items"][0]["events"], [{"type": "toileting", "pet": "dog"}, {"type": "destruction", "pet": "cat"}])
 
+    def test_activity_labels_and_configurable_alert_modes_in_settings(self):
+        headers = self.login()
+        labels = self.client.get("/api/activities").json()["labels"]
+        self.assertEqual(labels["sleeping"], "休息")
+        self.assertEqual(labels["resting"], "休息")
+        self.assertEqual(labels["grooming"], "舔毛")
+        self.assertEqual(labels["on_sofa"], "上沙发")
+        self.assertEqual(labels["on_table"], "上桌子")
+        self.assertEqual(labels["on_chair"], "上椅子")
+        settings_html = self.client.get("/settings").text
+        for key in ("eating", "destruction", "toileting", "on_sofa", "on_table", "on_chair"):
+            self.assertIn(f'name="{key}"', settings_html)
+        self.assertIn('<option value="off">不作预警</option>', settings_html)
+        updated_modes = {
+            "eating": "off", "destruction": "notify", "toileting": "record",
+            "on_sofa": "notify", "on_table": "record", "on_chair": "off",
+        }
+        response = self.client.put("/api/config", json={"event_modes": updated_modes}, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["event_modes"], updated_modes)
+        self.assertEqual(self.client.put("/api/config", json={"event_modes": {**updated_modes, "eating": "invalid"}},
+                                         headers=headers).status_code, 422)
+
 
 class ModelTests(unittest.IsolatedAsyncioTestCase):
     async def test_model_payloads_and_strict_review(self):
@@ -550,12 +589,62 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("喝水", calls[0][1]["questions"]["dog"]["criteria"]["eating"])
             self.assertIn("百万", calls[0][1]["questions"]["dog"]["instructions"])
             self.assertIn("英镑", calls[0][1]["questions"]["cat"]["instructions"])
+            for option in ("grooming", "on_sofa", "on_table", "on_chair"):
+                self.assertIn(option, calls[0][1]["questions"]["dog"]["criteria"])
+                self.assertIn(option, calls[0][1]["questions"]["cat"]["criteria"])
+            self.assertIn("on_sofa", calls[0][1]["questions"]["dog"]["instructions"])
+            self.assertIn("优先", calls[0][1]["questions"]["dog"]["criteria"]["on_sofa"])
             self.assertEqual(calls[1][1]["model"], "swift-1.5")
             content = calls[1][1]["messages"][0]["content"]
             self.assertEqual([item["type"] for item in content], ["text", "image_url"])
             self.assertIn("4列5行", content[0]["text"])
             self.assertIn("第1至20帧", content[0]["text"])
             self.assertIn("从左到右、从上到下", content[0]["text"])
+
+    async def test_configurable_alert_events_and_new_activity_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "input"
+            path.write_bytes(b"fixture")
+            calls = []
+            def handler(request):
+                payload = json.loads(request.content)
+                calls.append((request.url.path, payload))
+                if request.url.path.endswith("systemone"):
+                    answers = visibility_response()["answers"]
+                    for key in payload["questions"]:
+                        if key not in answers:
+                            answers[key] = {"noul": .85} if payload["questions"][key]["type"] == "noul" else None
+                    answers["dog"] = {"choice": "on_sofa", "probabilities": {"on_sofa": .88, "sleeping": .12}}
+                    answers["cat"] = {"choice": "grooming", "probabilities": {"grooming": .72, "sleeping": .28}}
+                    return httpx.Response(200, json={"answers": answers})
+                events = [{"type": kind, "confirmed": True, "pet": "dog", "description": "在家具上"}
+                          for kind in ("destruction", "toileting", "on_sofa", "on_table", "on_chair")]
+                return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"events": events})}}]})
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                models = Models(client)
+                cfg = Settings(event_modes={
+                    "eating": "off", "destruction": "notify", "toileting": "record",
+                    "on_sofa": "notify", "on_table": "record", "on_chair": "notify",
+                })
+                decision = await models.decide(cfg, path, path)
+                self.assertEqual(set(calls[0][1]["questions"]), {
+                    "dog_presence", "cat_presence", "destruction", "toileting", "on_sofa", "on_table", "on_chair", "dog", "cat",
+                })
+                self.assertNotIn("吃喝预警", calls[0][1]["state"])
+                self.assertIn("上沙发", calls[0][1]["state"])
+                self.assertEqual(set(decision["scores"]), {"destruction", "toileting", "on_sofa", "on_table", "on_chair"})
+                self.assertEqual(decision["pets"]["dog"]["activity"], "on_sofa")
+                self.assertEqual(decision["pets"]["cat"]["activity"], "grooming")
+                reviewed = await models.review(cfg, ["destruction", "toileting", "on_sofa", "on_table", "on_chair"],
+                                               path, [i * 3 + 1.5 for i in range(20)])
+                self.assertEqual([item.type for item in reviewed], ["destruction", "toileting", "on_sofa", "on_table", "on_chair"])
+                self.assertIn("上沙发（on_sofa）", calls[1][1]["messages"][0]["content"][0]["text"])
+
+                off_cfg = Settings(event_modes={key: "off" for key in cfg.event_modes})
+                off_decision = await models.decide(off_cfg, path, path)
+                self.assertEqual(set(calls[2][1]["questions"]), {"dog_presence", "cat_presence", "dog", "cat"})
+                self.assertEqual(off_decision["scores"], {})
+                self.assertNotIn("预警", calls[2][1]["state"])
 
     async def decide_with_visibility(self, visibility, activities=None, previous=None):
         calls = []
@@ -606,7 +695,7 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(decision["identity_verified"])
 
     async def test_same_candidate_state_continues_even_when_model_selects_uncertain(self):
-        for activity in ("sleeping", "eating", "walking", "playing", "other"):
+        for activity in ("sleeping", "eating", "walking", "playing", "grooming", "on_sofa", "on_table", "on_chair", "other"):
             with self.subTest(activity=activity):
                 previous = {"dog": {"activity": activity, "visibility": "present", "identity_verified": True}}
                 probabilities = {"uncertain": .9, activity: .1}
@@ -1076,6 +1165,31 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["status"], "cancelled")
         self.assertEqual(len(row["images"]), 1)
         self.assertEqual(row["pets"], {})
+
+    async def test_configurable_alert_modes_filter_disabled_and_notify_enabled_furniture_events(self):
+        cfg = self.config.current.model_copy(update={
+            "event_modes": {
+                "eating": "off", "destruction": "off", "toileting": "off",
+                "on_sofa": "notify", "on_table": "record", "on_chair": "off",
+            }
+        })
+        self.monitor.models.decide.return_value = {
+            "scores": {"destruction": .95, "on_sofa": .88, "on_table": .85, "on_chair": .9},
+            "pets": {"dog": {"activity": "on_sofa", "confidence": .88}, "cat": {"activity": "on_table", "confidence": .85}},
+        }
+        self.monitor.models.review.return_value = [
+            ReviewEvent(type="on_sofa", confirmed=True, pet="dog", description="百万趴在沙发上"),
+            ReviewEvent(type="on_table", confirmed=True, pet="cat", description="英镑跳上桌子"),
+        ]
+        await self.analyze(cfg)
+        self.monitor.models.review.assert_awaited_once()
+        self.assertEqual(self.monitor.models.review.call_args.args[1], ["on_sofa", "on_table"])
+        rows = {row["type"]: row for row in self.store.recent()}
+        self.assertEqual(set(rows), {"on_sofa", "on_table"})
+        self.assertEqual(rows["on_sofa"]["notification"], "sent")
+        self.assertEqual(rows["on_table"]["notification"], "record_only")
+        self.mocks[-1].assert_awaited_once()
+        self.assertEqual(self.mocks[-1].call_args.args[2], "宠物提醒 · 上沙发")
 
 
 if __name__ == "__main__":

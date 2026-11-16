@@ -23,13 +23,41 @@ PET_APPEARANCE = (
 )
 
 
+VISIBILITY_CRITERIA = {
+    "present": "清楚看见这只宠物的真实身体和可辨认的身份特征，能辨认头耳、躯干、腿或尾巴等组合结构，不是另一只动物或物品",
+    "absent": "没有看到这只宠物；不能因为另一只宠物出现、已知它住在家里或某个垫子存在就认为它也在",
+    "uncertain": "只有模糊局部、遮挡、暗色团块或身份无法确定，无法确认这只宠物是否出现在画面中",
+}
+EVENT_DESCRIPTIONS = {
+    "eating": "宠物正在碗或饮水器前实际吃东西或喝水，统一称为吃喝，不区分水盆和饭盆，不包括路过或闻嗅",
+    "destruction": "宠物正在撕咬或抓挠家具、门、线缆等家居物品，不包括正常玩宠物玩具",
+    "toileting": "宠物正在猫砂盆或指定厕所之外排尿或排便，需有明确行为证据，不包括普通蹲坐",
+    "on_sofa": "宠物跳上、站在、坐在或趴在沙发上（包括沙发坐垫、扶手或靠背），不仅是在沙发旁地面",
+    "on_table": "宠物跳上、站在、坐在或趴在桌子（茶几、餐桌、书桌等桌面）上，不仅是在桌下或桌旁地面",
+    "on_chair": "宠物跳上、站在、坐在或趴在椅子（餐椅、办公椅、凳子等椅面）上，不仅是在椅旁或椅下地面",
+}
+ACTIVITY_CRITERIA = {
+    "sleeping": "该宠物正在地上、宠物窝或垫子上睡觉或安静休息，包括趴卧、蜷卧、闭眼或坐着、站着不动；如果在沙发、桌子或椅子上休息应优先选对应的上沙发、上桌子或上椅子；不包括走动、玩耍、吃喝、舔毛等活动，看不清时选 uncertain",
+    "eating": "该宠物正在碗、食物或饮水器前实际吃东西或喝水，统一为吃喝；不要求区分水盆和饭盆，不包括路过或闻嗅",
+    "walking": "该宠物在地面或画面中走动、散步或跑动；若在沙发、桌子或椅子上应优先选对应的上沙发、上桌子或上椅子",
+    "playing": "该宠物正在玩玩具、与另一只宠物互动或嬉戏；若身体在沙发、桌子或椅子上应优先选对应的上沙发、上桌子或上椅子",
+    "grooming": "该宠物正在用舌头舔自己的毛发、爪子或身体进行清洁梳理；若在沙发、桌子或椅子上应优先选对应的上沙发、上桌子或上椅子",
+    "on_sofa": "该宠物站在、坐在、趴在或躺在沙发上（包括沙发坐垫、扶手或靠背），只要在沙发上即使静止休息也优先选此项，不包括仅在沙发旁地面",
+    "on_table": "该宠物站在、坐在、趴在或躺在桌子（茶几、餐桌、书桌等桌面）上，只要在桌面上即使静止休息也优先选此项，不包括在桌下或桌旁地面",
+    "on_chair": "该宠物站在、坐在、趴在或躺在椅子（餐椅、办公椅、凳子等椅面）上，只要在椅子上即使静止休息也优先选此项，不包括在椅旁或椅下地面",
+    "not_visible": "整段视频中均看不到该宠物，不是仅短暂被遮挡或难以辨认",
+    "other": "能看见该宠物，正在进行抓痒、排泄等上述类别之外的活动",
+    "uncertain": "画面遮挡、太暗、身份或行为证据不足，无法可靠判断",
+}
+
+
 class ModelError(RuntimeError):
     pass
 
 
 class ReviewEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: Literal["eating", "destruction", "toileting"]
+    type: Literal["eating", "destruction", "toileting", "on_sofa", "on_table", "on_chair"]
     confirmed: StrictBool
     pet: Literal["dog", "cat", "both", "unknown"]
     description: str = Field(min_length=1, max_length=1000)
@@ -37,7 +65,7 @@ class ReviewEvent(BaseModel):
 
 class ReviewResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    events: list[ReviewEvent] = Field(max_length=3)
+    events: list[ReviewEvent] = Field(max_length=len(EVENTS))
 
 
 def data_url(path: Path, mime: str):
@@ -126,51 +154,44 @@ class Models:
                  "每段独立判断，不沿用上一段的出现状态或行为。")
         videos = [data_url(video, "video/mp4")]
         images = [data_url(snapshot, "image/jpeg")]
-        visibility_criteria = {
-            "present": "清楚看见这只宠物的真实身体和可辨认的身份特征，能辨认头耳、躯干、腿或尾巴等组合结构，不是另一只动物或物品",
-            "absent": "没有看到这只宠物；不能因为另一只宠物出现、已知它住在家里或某个垫子存在就认为它也在",
-            "uncertain": "只有模糊局部、遮挡、暗色团块或身份无法确定，无法确认这只宠物是否出现在画面中",
-        }
-        descriptions = {
-            "eating": "宠物正在碗或饮水器前实际吃东西或喝水，统一称为吃喝，不区分水盆和饭盆，不包括路过或闻嗅",
-            "destruction": "宠物正在撕咬或抓挠家具、门、线缆等家居物品，不包括正常玩宠物玩具",
-            "toileting": "宠物正在猫砂盆或指定厕所之外排尿或排便，需有明确行为证据，不包括普通蹲坐",
-        }
+        active_events = [key for key in EVENTS if settings.event_modes.get(key, "off") != "off"]
+        if active_events:
+            alert_names = "、".join(EVENTS[key] for key in active_events)
+            joint_instruction = (
+                f"在同一次判断中独立检查每只宠物是否入镜、主要活动及{alert_names}预警。"
+                "先核对真实身体和身份；未确认入镜的宠物，活动选 uncertain 或 not_visible。"
+                "预警需检查整段录像中是否曾发生，不能只看主要活动或中间截图；"
+                "仅按可见的实际行为判断，无宠物时不应产生预警，不得猜测。"
+            )
+        else:
+            joint_instruction = (
+                "在同一次判断中独立检查每只宠物是否入镜及主要活动。"
+                "先核对真实身体和身份；未确认入镜的宠物，活动选 uncertain 或 not_visible。"
+                "仅按可见的实际行为判断，不得猜测。"
+            )
         payload = {
             "model": "d3",
-            "state": state + "在同一次判断中独立检查每只宠物是否入镜、主要活动及三类预警。"
-                     "先核对真实身体和身份；未确认入镜的宠物，活动选 uncertain 或 not_visible。"
-                     "预警需检查整段录像中是否曾发生，不能只看主要活动或中间截图；"
-                     "仅按可见的实际行为判断，无宠物时不应产生预警，不得猜测。",
+            "state": state + joint_instruction,
             "questions": {
                 **{pet + "_presence": {"type": "choice", "instructions": f"能否在本段录像中清楚辨认出{name}的真实身体？",
-                                       "criteria": visibility_criteria} for pet, name in PET_NAMES.items()},
-                **{key: {"type": "noul", "instructions": text + "，在本段录像中是否曾发生？",
+                                       "criteria": VISIBILITY_CRITERIA} for pet, name in PET_NAMES.items()},
+                **{key: {"type": "noul", "instructions": EVENT_DESCRIPTIONS[key] + "，在本段录像中是否曾发生？",
                          "criteria": {"true": "明确发生", "false": "未发生或证据不足"}}
-                   for key, text in descriptions.items()},
+                   for key in active_events},
             },
             "videos": videos, "images": images,
         }
-        criteria = {
-            "sleeping": "该宠物正在睡觉或安静休息，包括趴卧、蜷卧、闭眼或坐着、站着不动；不包括走动、玩耍、吃喝等明确活动，看不清时选 uncertain",
-            "eating": "该宠物正在碗、食物或饮水器前实际吃东西或喝水，统一为吃喝；不要求区分水盆和饭盆，不包括路过或闻嗅",
-            "walking": "该宠物在画面中走动、散步或跑动",
-            "playing": "该宠物正在玩玩具、与另一只宠物互动或嬉戏",
-            "not_visible": "整段视频中均看不到该宠物，不是仅短暂被遮挡或难以辨认",
-            "other": "能看见该宠物，正在进行梳理、抓痒等上述类别之外的活动",
-            "uncertain": "画面遮挡、太暗、身份或行为证据不足，无法可靠判断",
-        }
-        for pet in PET_NAMES:
-            name = PET_NAMES[pet]
+        for pet, name in PET_NAMES.items():
             payload["questions"][pet] = {
                 "type": "choice", "instructions": f"这段视频里{name}最主要的活动是什么？"
-                "睡觉和休息不区分，统一选择 sleeping。请选择一个最符合可见证据的类别。"
+                "只要宠物身体在沙发、桌子或椅子上（即使正在上面趴卧或休息），优先选择 on_sofa、on_table 或 on_chair；"
+                "不在这些家具上时，睡觉和休息不区分，统一选择 sleeping。请选择一个最符合可见证据的类别。"
                 "不清楚时选 uncertain，不要把看不清等同于未入镜。",
-                "criteria": criteria,
+                "criteria": ACTIVITY_CRITERIA,
             }
         result = await post_json(self.client, model_endpoint(settings, "systemone"), payload, key=settings.model_key)
         try:
-            scores = {key: result["answers"][key]["noul"] for key in EVENTS}
+            scores = {key: result["answers"][key]["noul"] for key in active_events}
             if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1
                    for v in scores.values()):
                 raise ValueError
@@ -178,10 +199,10 @@ class Models:
             raise ModelError("d3 返回的活动或事件判断格式无效") from None
         pets = {}
         for pet in PET_NAMES:
-            presence, presence_confidence = choice_answer(result, pet + "_presence", visibility_criteria)
+            presence, presence_confidence = choice_answer(result, pet + "_presence", VISIBILITY_CRITERIA)
             verified = presence == "present"
             absent = presence == "absent"
-            activity, confidence = choice_answer(result, pet, criteria)
+            activity, confidence = choice_answer(result, pet, ACTIVITY_CRITERIA)
             pets[pet] = {"activity": "not_visible" if absent else "uncertain", "confidence": presence_confidence if absent else 0,
                          "visibility": presence, "visibility_confidence": presence_confidence, "identity_verified": verified}
             if not verified:
@@ -192,7 +213,7 @@ class Models:
             if activity == "not_visible":
                 pets[pet].update(activity="uncertain", identity_verified=False)
         if all(pets[pet]["activity"] == "not_visible" for pet in PET_NAMES):
-            scores = {key: 0 for key in EVENTS}
+            scores = {key: 0 for key in active_events}
         return {"scores": scores, "pets": pets}
 
     async def review(self, settings: Settings, candidates: list[str], image: Path, offsets: list[float]):
@@ -203,8 +224,9 @@ class Models:
             "没有清晰证据则 confirmed=false。eating 统一表示吃喝，进食或饮水均可，不必分辨水盆和饭盆；"
             "但需有实际吃喝证据，不能只是路过或闻嗅。拆家不包括玩宠物玩具；"
             "乱拉乱尿需明确排泄证据且在猫砂盆或指定厕所外，仅蹲坐不足以确认。"
+            "上沙发（on_sofa）、上桌子（on_table）、上椅子（on_chair）需有宠物身体确实在对应家具表面上的明确证据，仅在家具旁地面不得确认。"
             "看不清指定区域或行为时请拒绝确认，不得猜测。描述用百万、英镑称呼宠物，统一用吃喝，不猜测碗内是水还是食物。"
-            '只返回 JSON：{"events":[{"type":"eating|destruction|toileting",'
+            '只返回 JSON：{"events":[{"type":"' + "|".join(EVENTS) + '",'
             '"confirmed":true,"pet":"dog|cat|both|unknown","description":"证据描述"}]}。'
             "每个候选恰好返回一次，不添加其他事件。"
         )

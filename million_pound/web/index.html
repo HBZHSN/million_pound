@@ -20,12 +20,15 @@
         <label>分析片段长度 · 秒<input name="clip_duration" type="number" min="2" max="120" required></label>
         <label>视频加速 · 倍<input name="speed" type="number" min="1" max="16" step="0.5" required></label>
         <label>最短复核间隔 · 秒<input name="review_interval" type="number" min="0" max="86400" required></label>
-      </div><p class="footnote">持续录像，默认每分钟将 60 秒录像按每秒 2 帧、6 倍速生成 10 秒视频，用一次 d3 请求判断入镜、活动和预警；模型分析时继续采集。仅吃喝、拆家、乱拉乱尿候选交给 swift-1.5，以 4 列 5 行、共 20 帧拼图复核。最短复核间隔默认 0，每段候选均复核；设为正数时，复核失败也计入间隔。</p></fieldset>
+      </div><p class="footnote">持续录像，默认每分钟将 60 秒录像按每秒 2 帧、6 倍速生成 10 秒视频，用一次 d3 请求判断入镜、活动和已开启的预警；模型分析时继续采集。仅在右栏开启预警的事件候选交给 swift-1.5，以 4 列 5 行、共 20 帧拼图复核。最短复核间隔默认 0，每段候选均复核；设为正数时，复核失败也计入间隔。</p></fieldset>
       <fieldset class="card"><legend>什么事需要提醒你</legend><div class="fields">
-        <label class="mode-row"><span>吃喝<small>进食或饮水，统一记录</small></span><select name="eating"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
-        <label class="mode-row"><span>拆家<small>破坏家具或家居物品</small></span><select name="destruction"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
-        <label class="mode-row"><span>乱拉乱尿<small>指定区域之外的排泄行为</small></span><select name="toileting"><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
-      </div><p class="footnote">只有复核确认的事件才会通知。同类、同只宠物的提醒在五分钟内合并。</p></fieldset>
+        <label class="mode-row"><span>吃喝<small>进食或饮水，统一记录</small></span><select name="eating"><option value="off">不作预警</option><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
+        <label class="mode-row"><span>拆家<small>破坏家具或家居物品</small></span><select name="destruction"><option value="off">不作预警</option><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
+        <label class="mode-row"><span>乱拉乱尿<small>指定区域之外的排泄行为</small></span><select name="toileting"><option value="off">不作预警</option><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
+        <label class="mode-row"><span>上沙发<small>站、趴或待在沙发上</small></span><select name="on_sofa"><option value="off">不作预警</option><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
+        <label class="mode-row"><span>上桌子<small>站、趴或待在桌子上</small></span><select name="on_table"><option value="off">不作预警</option><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
+        <label class="mode-row"><span>上椅子<small>站、趴或待在椅子上</small></span><select name="on_chair"><option value="off">不作预警</option><option value="record">只记录</option><option value="notify">发送通知</option></select></label>
+      </div><p class="footnote">设为“不作预警”的行为只在活动时间线展示，不触发复核或事件记录；只有复核确认的事件才会通知。同类、同只宠物的提醒在五分钟内合并。</p></fieldset>
       <fieldset class="card"><legend>每天的守护时间</legend><p class="muted">北京时间；不添加时段表示全天监控。可跨午夜，开始与结束相同表示全天。</p><div id="windows" class="fields"></div><button id="add-window" type="button" class="secondary">＋ 添加时段</button><label class="retention">截图保留 · 天<input name="retention_days" type="number" min="1" max="365" required></label><p class="footnote">截图到期后自动清理，事件文字记录保留。原始视频仅临时用于分析。</p></fieldset>
       <fieldset class="card"><legend>摄像头</legend><div class="fields"><label>RTSP / HTTP(S) 视频源<input name="stream_url" type="password" autocomplete="new-password" maxlength="2048" placeholder="rtsp://127.0.0.1:8554/camera_设备ID"></label></div><p class="footnote">先在小米桥接页面完成账号授权，再填入视频流地址。已保存的地址留空即可保留。</p><button id="test-camera" type="button" class="secondary">测试并查看截图</button><img id="preview" class="preview" alt="摄像头连接测试截图" hidden></fieldset>
       <fieldset class="card"><legend>模型服务</legend><div class="fields"><label>模型服务地址<input name="model_url" type="url" required placeholder="http://127.0.0.1:18080"></label><label>模型 API 密钥<input name="model_key" type="password" autocomplete="new-password" maxlength="2048"></label></div><p class="footnote">初判使用 d3，截图复核使用 swift-1.5。密钥留空保留已有值。</p></fieldset>

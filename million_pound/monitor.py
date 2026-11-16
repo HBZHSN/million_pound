@@ -204,7 +204,8 @@ class Monitor:
                 self.status["phase"] = "complete"
                 return
             fast.replace((self.images / center).with_suffix(".mp4"))
-            candidates = [key for key, score in scores.items() if score >= 0.7]
+            candidates = [key for key, score in scores.items()
+                          if cfg.event_modes.get(key, "off") != "off" and score >= 0.7]
             if not candidates:
                 self.status["phase"] = "no_event"
                 return

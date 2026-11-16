@@ -1,7 +1,15 @@
 export const PETS = {dog: "百万", cat: "英镑"};
 const SUSPECT_PREFIX = "suspect:";
-const PHOTO_PRIORITY = {toileting: 0, destruction: 1, eating: 2, playing: 3, walking: 4, sleeping: 5};
-const CANDIDATES = new Set(["sleeping", "resting", "eating", "drinking", "walking", "playing", "other"]);
+const PHOTO_PRIORITY = {
+  toileting: 0, destruction: 1, eating: 2,
+  on_table: 3, on_sofa: 4, on_chair: 5,
+  playing: 6, walking: 7, grooming: 8, sleeping: 9,
+};
+const DEFAULT_PHOTO_PRIORITY = 10;
+const CANDIDATES = new Set([
+  "sleeping", "resting", "eating", "drinking", "walking", "playing",
+  "grooming", "on_sofa", "on_table", "on_chair", "other",
+]);
 const normalizeActivity = activity => activity === "resting" ? "sleeping" : activity === "drinking" ? "eating" : activity;
 
 export function activityCandidate(decision) {
@@ -74,10 +82,10 @@ export function timelinePhotos(items, ticks) {
       for (const pet of Object.keys(PETS)) {
         const decision = item.pets[pet];
         if (decision?.visibility !== "present" || decision.activity === "not_visible" || decision.proposed_activity === "not_visible") continue;
-        let key = activityKey(item, pet), priority = PHOTO_PRIORITY[key?.replace(SUSPECT_PREFIX, "")] ?? 6;
+        let key = activityKey(item, pet), priority = PHOTO_PRIORITY[key?.replace(SUSPECT_PREFIX, "")] ?? DEFAULT_PHOTO_PRIORITY;
         for (const event of item.events || []) {
           if (event.pet !== pet && event.pet !== "both") continue;
-          const rank = PHOTO_PRIORITY[event.type] ?? 6;
+          const rank = PHOTO_PRIORITY[event.type] ?? DEFAULT_PHOTO_PRIORITY;
           if (rank < priority || rank === priority && key?.startsWith(SUSPECT_PREFIX)) { key = event.type; priority = rank; }
         }
         const id = pet + "-" + bucket, previous = photos.get(id);

@@ -1,7 +1,7 @@
 "use strict";
 import {$, action, api, deleteMedia, formatTime, initSession, notice, petNames} from "/assets/client.js";
 const form = $("#settings-form");
-const names = {eating: "吃喝", destruction: "拆家", toileting: "乱拉乱尿"};
+const names = {eating: "吃喝", destruction: "拆家", toileting: "乱拉乱尿", on_sofa: "上沙发", on_table: "上桌子", on_chair: "上椅子"};
 const pets = {dog: "百万", cat: "英镑", both: "百万和英镑", unknown: "宠物待确认"};
 const states = {confirmed: "已确认", rejected: "复核未成立", unreviewed: "未复核 · 间隔限制", reviewing: "复核中", review_error: "复核失败", cancelled: "已中断"};
 const notifications = {none: "未通知", record_only: "只记录", deduplicated: "五分钟内已提醒", not_configured: "未配置 Bark", sending: "发送中", sent: "图文通知已发送", sent_text: "文字通知已发送", failed: "通知失败", unknown: "通知结果待确认"};
@@ -22,7 +22,7 @@ function addWindow(start = "09:00", end = "18:00") {
 function fillConfig(value) {
   config = value;
   for (const key of ["sample_fps", "clip_duration", "speed", "review_interval", "retention_days", "model_url", "public_url"]) form.elements[key].value = value[key];
-  for (const key of Object.keys(names)) form.elements[key].value = value.event_modes[key];
+  for (const key of Object.keys(names)) form.elements[key].value = value.event_modes[key] || "off";
   for (const key of ["stream_url", "model_key", "bark_url"]) {
     form.elements[key].value = "";
     form.elements[key].placeholder = value[key + "_configured"] ? "已保存 · 留空保留" : "尚未配置";

@@ -12,9 +12,37 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ROOT = Path(__file__).resolve().parent.parent
 BEIJING = ZoneInfo("Asia/Shanghai")
-EVENTS = {"eating": "吃喝", "destruction": "拆家", "toileting": "乱拉乱尿"}
-ACTIVITIES = {"sleeping": "睡觉", "drinking": "吃喝", "eating": "吃喝", "walking": "走动 / 散步",
-              "playing": "玩耍", "resting": "休息", "not_visible": "未入镜", "other": "其他活动", "uncertain": "判断不清"}
+EVENTS = {
+    "eating": "吃喝",
+    "destruction": "拆家",
+    "toileting": "乱拉乱尿",
+    "on_sofa": "上沙发",
+    "on_table": "上桌子",
+    "on_chair": "上椅子",
+}
+DEFAULT_EVENT_MODES = {
+    "eating": "record",
+    "destruction": "notify",
+    "toileting": "notify",
+    "on_sofa": "off",
+    "on_table": "off",
+    "on_chair": "off",
+}
+ACTIVITIES = {
+    "sleeping": "休息",
+    "drinking": "吃喝",
+    "eating": "吃喝",
+    "walking": "走动 / 散步",
+    "playing": "玩耍",
+    "grooming": "舔毛",
+    "on_sofa": "上沙发",
+    "on_table": "上桌子",
+    "on_chair": "上椅子",
+    "resting": "休息",
+    "not_visible": "未入镜",
+    "other": "其他活动",
+    "uncertain": "判断不清",
+}
 
 
 def write_private(path: Path, value: dict):
@@ -45,8 +73,8 @@ class Settings(BaseModel):
     speed: float = Field(default=6, ge=1, le=16)
     review_interval: int = Field(default=0, ge=0, le=86400)
     windows: list[TimeWindow] = Field(default_factory=list, max_length=24)
-    event_modes: dict[str, Literal["notify", "record"]] = Field(
-        default_factory=lambda: {"eating": "record", "destruction": "notify", "toileting": "notify"}
+    event_modes: dict[str, Literal["off", "record", "notify"]] = Field(
+        default_factory=lambda: dict(DEFAULT_EVENT_MODES)
     )
     model_url: str = "http://127.0.0.1:18080"
     model_key: str = Field(default="", max_length=2048)
@@ -83,7 +111,7 @@ class Settings(BaseModel):
     @classmethod
     def modes_valid(cls, value):
         if set(value) != set(EVENTS):
-            raise ValueError("必须配置吃喝、拆家和乱拉乱尿三类事件")
+            raise ValueError("必须完整配置吃喝、拆家、乱拉乱尿、上沙发、上桌子、上椅子事件模式")
         return value
 
 
@@ -101,6 +129,9 @@ class Config:
         self.path = root / "config.json"
         value = json.loads(self.path.read_text()) if self.path.exists() else {}
         value.pop("sample_interval", None)
+        modes = value.get("event_modes")
+        if isinstance(modes, dict) and {"eating", "destruction", "toileting"}.issubset(modes) and set(modes).issubset(EVENTS):
+            value["event_modes"] = {**DEFAULT_EVENT_MODES, **modes}
         self.current = Settings.model_validate(value)
 
     def save(self, settings: Settings):

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import {activityCandidate, activityKey, durationLabel, groupActivities, timelineLayout, timelinePhotos} from "../million_pound/web/timeline.js";
 import {petNames} from "../million_pound/web/client.js";
 
@@ -230,8 +231,8 @@ test("手机布局给图片留出上半格，活动折叠不改变真实时间�
   assert.ok(mobile.clusters[0].top - labels[0].labelTop >= 28);
 });
 
-test("同格图片严格按乱拉乱尿、拆家、吃喝、玩耍、走动、睡觉排序，不被较新低优先级覆盖", () => {
-  const order = ["toileting", "destruction", "eating", "playing", "walking", "sleeping", "other"];
+test("同格图片严格按预警与活动优先级排序，不被较新低优先级覆盖", () => {
+  const order = ["toileting", "destruction", "eating", "on_table", "on_sofa", "on_chair", "playing", "walking", "grooming", "sleeping", "other"];
   const items = order.map((key, index) => {
     const item = sample(index + 1, index * 60, index < 2 ? "sleeping" : key, "not_visible");
     item.images = ["frame.jpg"]; item.frame_offsets = [5];
@@ -394,7 +395,7 @@ test("所有活动的确认与疑似按同一状态合并，原始判断仍保�
 });
 
 test("全为疑似时保留疑似，任一位置有确认则整段同类状态稳定，真正换状态仍切段", () => {
-  for (const activity of ["sleeping", "walking", "eating", "playing", "other"]) {
+  for (const activity of ["sleeping", "walking", "eating", "playing", "grooming", "on_sofa", "on_table", "on_chair", "other"]) {
     const items = [sample(1, 0, "uncertain"), sample(2, 10, "uncertain"), sample(3, 20, "uncertain")];
     for (const item of items) item.pets.dog = {...item.pets.dog, proposed_activity: activity, confidence: .2};
     assert.equal(groupActivities(items).find(item => item.pet === "dog").key, "suspect:" + activity);
@@ -484,4 +485,13 @@ test("名字与时长使用简洁的显示方式", () => {
   assert.equal(durationLabel(10000), "片刻");
   assert.equal(durationLabel(120000), "约 2 分钟");
   assert.equal(durationLabel(3660000), "约 1 小时 1 分钟");
+});
+
+test("新增舔毛、上沙发、上桌子、上椅子正常参与时间线分段，且页面脚本统一显示休息而非睡觉", () => {
+  const activitiesSource = fs.readFileSync(new URL("../million_pound/web/activities.js", import.meta.url), "utf8");
+  assert.ok(!activitiesSource.includes("睡觉"));
+  assert.ok(activitiesSource.includes('key === "sleeping" ? "休息"'));
+  const items = ["grooming", "on_sofa", "on_table", "on_chair"].map((activity, index) => sample(index + 1, index * 10, activity));
+  const episodes = groupActivities(items).filter(item => item.pet === "dog");
+  assert.deepEqual(episodes.map(item => item.key), ["on_chair", "on_table", "on_sofa", "grooming"]);
 });
