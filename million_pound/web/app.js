@@ -147,6 +147,30 @@ form.addEventListener("submit", e => {
     notice("设置已保存并生效。"); await status();
   });
 });
+function renderViewerPasswords(items) {
+  const list = $("#viewer-password-list");
+  list.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement("li");
+    empty.className = "muted";
+    empty.textContent = "尚未配置浏览密码。";
+    list.append(empty);
+    return;
+  }
+  for (const item of items) {
+    const fragment = $("#viewer-password-template").content.cloneNode(true);
+    fragment.querySelector(".viewer-label").textContent = item.label || "未命名浏览密码";
+    fragment.querySelector(".viewer-created").textContent = item.created_at ? "添加于 " + formatTime(item.created_at) : "";
+    fragment.querySelector(".delete-viewer-password").dataset.viewerId = item.id;
+    list.append(fragment);
+  }
+}
+
+async function loadViewerPasswords() {
+  const result = await api("/api/viewer-passwords");
+  renderViewerPasswords(result.items);
+}
+
 $("#password-form").addEventListener("submit", event => {
   event.preventDefault();
   const passwordForm = event.currentTarget;
@@ -159,6 +183,34 @@ $("#password-form").addEventListener("submit", event => {
       passwordForm.reset();
       window.location.assign("/login");
     } catch (error) { $("#password-message").textContent = error.message; }
+  });
+});
+$("#viewer-password-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const viewerForm = event.currentTarget;
+  action($("#add-viewer-password"), async () => {
+    const fields = viewerForm.elements;
+    $("#viewer-password-message").textContent = "";
+    try {
+      if (fields.password.value !== fields.confirm_password.value) throw new Error("两次浏览密码不一致");
+      const result = await api("/api/viewer-passwords", "POST", {
+        label: fields.label.value.trim(),
+        password: fields.password.value,
+      });
+      viewerForm.reset();
+      renderViewerPasswords(result.items);
+      notice("浏览密码已添加。");
+    } catch (error) { $("#viewer-password-message").textContent = error.message; }
+  });
+});
+$("#viewer-password-list").addEventListener("click", event => {
+  const button = event.target.closest(".delete-viewer-password");
+  if (!button) return;
+  if (!window.confirm("删除此浏览密码？使用该密码登录的设备将立即退出登录。")) return;
+  action(button, async () => {
+    const result = await api("/api/viewer-passwords/" + encodeURIComponent(button.dataset.viewerId), "DELETE");
+    renderViewerPasswords(result.items);
+    notice("浏览密码已删除。");
   });
 });
 $("#toggle").addEventListener("click", e => action(e.target, async () => {
@@ -183,7 +235,7 @@ $("#older").addEventListener("click", e => action(e.target, () => loadEvents(tru
   try {
     await initSession();
     fillConfig(await api("/api/config"));
-    await Promise.all([status(), loadEvents()]);
+    await Promise.all([status(), loadEvents(), loadViewerPasswords()]);
     setInterval(() => { if (!document.hidden) status().catch(e => notice(e.message, true)); }, 5000);
     setInterval(() => { if (!document.hidden && !browsingOlder && !selectedEvents.size) loadEvents().catch(e => notice(e.message, true)); }, 15000);
   } catch (error) { notice(error.message, true); }

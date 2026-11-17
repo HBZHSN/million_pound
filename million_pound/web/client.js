@@ -39,7 +39,26 @@ export async function api(path, method = "GET", body) {
 }
 
 export async function initSession() {
-  csrf = (await api("/api/session")).csrf;
+  const session = await api("/api/session");
+  csrf = session.csrf;
+  return session;
+}
+
+export async function copyText(text, inputElement = null) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {}
+  }
+  if (inputElement) {
+    inputElement.focus();
+    inputElement.select();
+    inputElement.setSelectionRange?.(0, text.length);
+    try { return document.execCommand("copy"); }
+    catch { return false; }
+  }
+  return false;
 }
 
 export async function action(button, work) {

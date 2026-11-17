@@ -131,3 +131,19 @@ nav a[aria-current="page"]{color:var(--green);font-weight:700}
   .detail-card{padding:24px 18px}#detail-title{font-size:22px}.detail-close{right:10px;top:10px}
 }
 @media(prefers-reduced-motion:reduce){.pet-header{transition:none}}
+.login-remember{margin-top:14px;color:var(--muted);font-weight:500}
+.viewer-fieldset{border:0;padding:0;margin:0}
+.viewer-password-list{list-style:none;margin:8px 0 0;padding:16px 0 0;border-top:1px solid var(--line);display:grid;gap:10px}
+.viewer-password-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:#fcfdfb}
+.viewer-password-item strong{display:block;font-size:14px}
+.viewer-password-item small{display:block;font-size:12px}
+.share-box{margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#f7f9f4}
+.share-hint{font-size:12px;color:var(--muted);margin-bottom:8px}
+.share-row{display:flex;gap:8px;align-items:center}
+.share-row input{margin-top:0;flex:1;font-size:12px}
+.share-row button{white-space:nowrap;padding:10px 14px;font-size:12px}
+.share-card{max-width:680px}
+.share-card .detail-picture{margin-top:20px}
+.share-card .notice{margin-top:14px;margin-bottom:0}
+#share-missing{padding:30px;font-size:13px;color:#8b9782}
+.status-card .muted{margin-bottom:20px}

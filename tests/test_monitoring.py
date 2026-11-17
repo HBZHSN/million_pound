@@ -3,6 +3,7 @@ import json
 import tempfile
 import time
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -157,6 +158,32 @@ class LocalTests(LocalSetup):
         self.assertNotIn(b"new-pass-11", sec.path.read_bytes())
         self.assertEqual(sec.path.stat().st_mode & 0o777, 0o600)
 
+    def test_viewer_password_storage_errors_and_legacy_auth_compatibility(self):
+        legacy_auth = json.loads(self.security.path.read_text())
+        legacy_auth.pop("viewer_passwords", None)
+        self.security.path.write_text(json.dumps(legacy_auth))
+        legacy_sec = Security(self.root / "data")
+        self.assertEqual(legacy_sec.viewer_passwords(), [])
+        self.assertEqual(legacy_sec.authenticate(PASSWORD), ("admin", "admin"))
+        self.assertIsNone(legacy_sec.authenticate("missing-pass"))
+
+        items = legacy_sec.add_viewer_password("family-pass", "  客厅  ")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["label"], "客厅")
+        self.assertEqual(legacy_sec.authenticate("family-pass"), ("viewer", items[0]["id"]))
+        self.assertNotIn(b"family-pass", legacy_sec.path.read_bytes())
+
+        snapshot = legacy_sec.path.read_bytes()
+        with patch("million_pound.security.write_private", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                legacy_sec.add_viewer_password("second-pass", "备用")
+            with self.assertRaises(OSError):
+                legacy_sec.remove_viewer_password(items[0]["id"])
+        self.assertEqual(legacy_sec.path.read_bytes(), snapshot)
+        self.assertEqual(len(legacy_sec.viewer_passwords()), 1)
+        with self.assertRaises(LookupError):
+            legacy_sec.remove_viewer_password("nonexistent-id")
+
     def test_activity_pagination_and_evidence_retention(self):
         store = Store(self.root / "data")
         images = self.root / "data" / "images"
@@ -209,6 +236,17 @@ class WebTests(LocalSetup):
     def login(self):
         self.assertEqual(self.client.post("/api/login", json={"password": PASSWORD}).status_code, 200)
         return {"X-CSRF-Token": self.client.get("/api/session").json()["csrf"]}
+
+    @contextmanager
+    def isolated_cookies(self):
+        saved = dict(self.client.cookies)
+        self.client.cookies.clear()
+        try:
+            yield self.client
+        finally:
+            self.client.cookies.clear()
+            for key, value in saved.items():
+                self.client.cookies.set(key, value)
 
     def test_authentication_secret_redaction_csrf_and_restore(self):
         for path in ("/api/config", "/api/events", "/api/activities", "/api/status", "/api/preview"):
@@ -547,6 +585,179 @@ class WebTests(LocalSetup):
         self.assertEqual(response.json()["event_modes"], updated_modes)
         self.assertEqual(self.client.put("/api/config", json={"event_modes": {**updated_modes, "eating": "invalid"}},
                                          headers=headers).status_code, 422)
+
+    def test_viewer_passwords_single_login_box_permissions_and_persistence(self):
+        admin_headers = self.login()
+        self.assertEqual(self.client.get("/api/session").json()["role"], "admin")
+        settings_html = self.client.get("/settings").text
+        self.assertIn('id="viewer-password-form"', settings_html)
+        self.assertIn('id="viewer-password-list"', settings_html)
+
+        # Configure multiple browse passwords; reject invalid/duplicate/admin-identical ones.
+        self.assertEqual(self.client.post("/api/viewer-passwords", json={"password": "short"}, headers=admin_headers).status_code, 422)
+        self.assertEqual(self.client.post("/api/viewer-passwords", json={"password": PASSWORD}, headers=admin_headers).status_code, 400)
+        first = self.client.post("/api/viewer-passwords", json={"password": "viewer-one", "label": "家人"}, headers=admin_headers)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(len(first.json()["items"]), 1)
+        second = self.client.post("/api/viewer-passwords", json={"password": "viewer-two", "label": "客厅"}, headers=admin_headers)
+        self.assertEqual(second.status_code, 200)
+        items = second.json()["items"]
+        self.assertEqual([item["label"] for item in items], ["家人", "客厅"])
+        self.assertNotIn("viewer-one", second.text)
+        self.assertEqual(self.client.post("/api/viewer-passwords", json={"password": "viewer-one"}, headers=admin_headers).status_code, 400)
+
+        # Create activity and event media to verify viewer isolation.
+        activity_id, event_ids, _ = self.media_fixture("a")
+        store = Store(self.root / "data")
+        store.db.close()
+
+        # Viewer logs in through the exact same /api/login endpoint.
+        admin_cookies = dict(self.client.cookies)
+        with self.isolated_cookies() as viewer_client:
+            res = viewer_client.post("/api/login", json={"password": "viewer-one", "remember": True})
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json()["role"], "viewer")
+            cookie_header = res.headers.get("set-cookie", "")
+            self.assertIn("Max-Age=2592000", cookie_header)
+            self.assertIn("SameSite=lax", cookie_header)
+
+            # Visiting /login while authenticated redirects to /.
+            self.assertEqual(viewer_client.get("/login", follow_redirects=False).status_code, 303)
+
+            session = viewer_client.get("/api/session").json()
+            self.assertEqual(session["role"], "viewer")
+            viewer_headers = {"X-CSRF-Token": session["csrf"]}
+
+            # Allowed timeline routes succeed for viewer.
+            self.assertEqual(viewer_client.get("/").status_code, 200)
+            self.assertEqual(viewer_client.get("/activities").status_code, 200)
+            acts = viewer_client.get("/api/activities").json()
+            self.assertIn("capture_status", acts)
+            self.assertEqual(viewer_client.get(f"/api/activities/{activity_id}/video").status_code, 200)
+            self.assertEqual(viewer_client.get(f"/api/activities/{activity_id}/images/0").status_code, 200)
+
+            # Admin-only pages & APIs return 403 for viewer.
+            settings_forbidden = viewer_client.get("/settings", follow_redirects=False)
+            self.assertEqual(settings_forbidden.status_code, 403)
+            self.assertNotIn("settings-form", settings_forbidden.text)
+            for path in ("/api/config", "/api/status", "/api/events", "/api/preview", "/api/viewer-passwords",
+                         f"/api/events/{event_ids[0]}/images/0"):
+                self.assertEqual(viewer_client.get(path).status_code, 403, path)
+            self.assertEqual(viewer_client.put("/api/config", json={"clip_duration": 15}, headers=viewer_headers).status_code, 403)
+            self.assertEqual(viewer_client.post("/api/viewer-passwords", json={"password": "viewer-three"}, headers=viewer_headers).status_code, 403)
+            self.assertEqual(viewer_client.delete(f"/api/viewer-passwords/{items[0]['id']}", headers=viewer_headers).status_code, 403)
+            self.assertEqual(viewer_client.request("DELETE", "/api/activities/media", json={"ids": [activity_id]}, headers=viewer_headers).status_code, 403)
+            self.assertEqual(viewer_client.put("/api/password", json={"current_password": "viewer-one", "new_password": "new-pass-11"}, headers=viewer_headers).status_code, 403)
+            self.assertEqual(viewer_client.post("/api/test/camera", headers=viewer_headers).status_code, 403)
+            self.assertEqual(viewer_client.post("/api/test/bark", headers=viewer_headers).status_code, 403)
+
+            # Deleting first viewer password immediately revokes that viewer's session, while admin & second viewer still work.
+            viewer_cookie = dict(viewer_client.cookies)
+            viewer_client.cookies.clear()
+            for key, value in admin_cookies.items():
+                viewer_client.cookies.set(key, value)
+            del_res = viewer_client.delete(f"/api/viewer-passwords/{items[0]['id']}", headers=admin_headers)
+            self.assertEqual(del_res.status_code, 200)
+            self.assertEqual([item["label"] for item in del_res.json()["items"]], ["客厅"])
+            self.assertEqual(viewer_client.get("/api/config").status_code, 200)
+            viewer_client.cookies.clear()
+            for key, value in viewer_cookie.items():
+                viewer_client.cookies.set(key, value)
+            self.assertEqual(viewer_client.get("/api/activities").status_code, 401)
+            self.assertEqual(viewer_client.post("/api/login", json={"password": "viewer-two"}).status_code, 200)
+            self.assertEqual(viewer_client.get("/api/activities").status_code, 200)
+
+            # Non-remembered login omits Max-Age.
+            viewer_client.post("/api/logout", headers={"X-CSRF-Token": viewer_client.get("/api/session").json()["csrf"]})
+            short_login = viewer_client.post("/api/login", json={"password": "viewer-two", "remember": False})
+            self.assertEqual(short_login.status_code, 200)
+            self.assertNotIn("Max-Age", short_login.headers.get("set-cookie", ""))
+
+        # Sliding renewal extends remembered session and synchronizes CSRF.
+        sec = self.client.app.state.security
+        near_threshold = int(time.time()) + 28 * 86400
+        payload = f"{near_threshold}.1.admin.admin.0123456789abcdef"
+        old_token = f"{payload}.{sec.sign('session:' + payload)}"
+        with self.isolated_cookies() as renewed_client:
+            renewed_client.cookies.set("pet_session", old_token)
+            sess_resp = renewed_client.get("/api/session")
+            self.assertEqual(sess_resp.status_code, 200)
+            self.assertIn("Max-Age=2592000", sess_resp.headers.get("set-cookie", ""))
+            new_csrf = sess_resp.json()["csrf"]
+            self.assertEqual(renewed_client.put("/api/config", json={"clip_duration": 30}, headers={"X-CSRF-Token": new_csrf}).status_code, 200)
+
+        # Changing admin password preserves remaining viewer passwords while rotating secret.
+        self.assertEqual(self.client.put("/api/password", json={"current_password": PASSWORD, "new_password": "new-admin-pass-11"}, headers=admin_headers).status_code, 200)
+        self.assertEqual(self.client.post("/api/login", json={"password": "viewer-two"}).status_code, 200)
+        self.assertEqual(self.client.post("/api/login", json={"password": "new-admin-pass-11"}).status_code, 200)
+
+    def test_timeline_video_sharing_is_public_for_seven_days_and_stops_when_deleted(self):
+        from urllib.parse import parse_qs, urlsplit
+        headers = self.login()
+        self.client.put("/api/config", json={"public_url": "https://home.local"}, headers=headers)
+        activity_id, event_ids, _ = self.media_fixture("b")
+        store = Store(self.root / "data")
+        store.db.execute("DELETE FROM events WHERE id IN (?, ?)", event_ids)
+        store.db.commit()
+        store.update_activity(activity_id, "done", pets={
+            "dog": {"activity": "on_sofa", "confidence": .9, "visibility": "present", "identity_verified": True},
+            "cat": {"activity": "not_visible", "confidence": .9, "visibility": "absent", "identity_verified": False},
+        })
+        store.db.close()
+
+        # Without CSRF / auth, share creation is rejected.
+        with self.isolated_cookies() as anon:
+            self.assertEqual(anon.post(f"/api/activities/{activity_id}/share", json={"pet": "dog"}).status_code, 401)
+        self.assertEqual(self.client.post(f"/api/activities/{activity_id}/share", json={"pet": "dog"}).status_code, 403)
+
+        share_res = self.client.post(f"/api/activities/{activity_id}/share", json={"pet": "dog"}, headers=headers)
+        self.assertEqual(share_res.status_code, 200)
+        body = share_res.json()
+        self.assertTrue(body["url"].startswith(f"https://home.local/share/{activity_id}?"))
+        parts = urlsplit(body["path"])
+        params = {k: v[0] for k, v in parse_qs(parts.query).items()}
+        expiry = int(params["expires"])
+        self.assertGreater(expiry, time.time() + 6.9 * 86400)
+        self.assertLessEqual(expiry, time.time() + 7 * 86400 + 1)
+
+        with self.isolated_cookies() as anon:
+            # Anonymous visitor opens share page, meta, video (including Range), and poster without password!
+            page = anon.get(body["path"])
+            self.assertEqual(page.status_code, 200)
+            self.assertIn("share-video", page.text)
+            meta = anon.get(f"/share/{activity_id}/meta?{parts.query}")
+            self.assertEqual(meta.status_code, 200)
+            self.assertEqual(meta.json()["pet_name"], "百万")
+            self.assertEqual(meta.json()["activity_label"], "上沙发")
+            video = anon.get(meta.json()["video"])
+            self.assertEqual(video.status_code, 200)
+            self.assertEqual(video.content, b"private-video")
+            partial = anon.get(meta.json()["video"], headers={"Range": "bytes=0-6"})
+            self.assertEqual(partial.status_code, 206)
+            self.assertEqual(partial.content, b"private")
+            poster = anon.get(meta.json()["poster"])
+            self.assertEqual(poster.status_code, 200)
+            self.assertEqual(poster.content, b"private-image")
+
+            # Tampering or expiry returns 403.
+            self.assertEqual(anon.get(f"/share/{activity_id}?expires={expiry}&sig=bad&pet=dog").status_code, 403)
+            self.assertEqual(anon.get(f"/share/{activity_id}/video?expires={expiry}&sig={params['sig']}&pet=cat").status_code, 403)
+            sec = self.client.app.state.security
+            expired = int(time.time()) - 10
+            expired_sig = sec.activity_share_signature(activity_id, expired, "dog")
+            self.assertEqual(anon.get(f"/share/{activity_id}?expires={expired}&sig={expired_sig}&pet=dog").status_code, 403)
+            too_long = int(time.time()) + 8 * 86400
+            long_sig = sec.activity_share_signature(activity_id, too_long, "dog")
+            self.assertEqual(anon.get(f"/share/{activity_id}/video?expires={too_long}&sig={long_sig}&pet=dog").status_code, 403)
+
+        # Deleting media makes share links return 404 immediately.
+        self.assertEqual(self.client.request("DELETE", "/api/activities/media", json={"ids": [activity_id]}, headers=headers).status_code, 200)
+        with self.isolated_cookies() as anon:
+            self.assertEqual(anon.get(body["path"]).status_code, 404)
+            self.assertEqual(anon.get(f"/share/{activity_id}/meta?{parts.query}").status_code, 404)
+            self.assertEqual(anon.get(meta.json()["video"]).status_code, 404)
+            self.assertEqual(anon.get(meta.json()["poster"]).status_code, 404)
+        self.assertEqual(self.client.post(f"/api/activities/{activity_id}/share", json={"pet": "dog"}, headers=headers).status_code, 404)
 
 
 class ModelTests(unittest.IsolatedAsyncioTestCase):

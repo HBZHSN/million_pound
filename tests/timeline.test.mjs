@@ -495,3 +495,42 @@ test("新增舔毛、上沙发、上桌子、上椅子正常参与时间线分�
   const episodes = groupActivities(items).filter(item => item.pet === "dog");
   assert.deepEqual(episodes.map(item => item.key), ["on_chair", "on_table", "on_sofa", "grooming"]);
 });
+
+test("上沙发、上桌子、上椅子在拥挤格子、事件提升和候选中优先级高于走动和玩耍", () => {
+  const base = Date.parse("2026-11-11T04:00:00Z");
+  // Even when walking and playing happen AFTER on_sofa/on_table/on_chair inside the same 15m cell,
+  // crowded layout picks furniture activities for visible labels ahead of walking and playing.
+  for (const furniture of ["on_sofa", "on_table", "on_chair"]) {
+    const episodes = [
+      {id: "e1", pet: "dog", key: "sleeping", start: base + 60000, end: base + 120000},
+      {id: "e2", pet: "dog", key: furniture, start: base + 180000, end: base + 240000},
+      {id: "e3", pet: "dog", key: "playing", start: base + 300000, end: base + 360000},
+      {id: "e4", pet: "dog", key: "walking", start: base + 420000, end: base + 480000},
+    ];
+    for (const compact of [false, true]) {
+      const layout = timelineLayout(episodes, base, base + 15 * 60000, compact);
+      const shownKeys = layout.intervals.filter(item => item.labelTop !== null).map(item => item.episode.key);
+      assert.ok(shownKeys.includes(furniture), `${furniture} should be shown for compact=${compact}, got ${shownKeys}`);
+      assert.ok(!shownKeys.includes("walking"));
+      const tops = layout.intervals.filter(item => item.labelTop !== null).sort((a, b) => a.top - b.top).map(item => item.labelTop);
+      assert.ok(tops.slice(1).every((top, idx) => top - tops[idx] >= 28));
+      assert.equal(layout.clusters[0].intervals.length, 4);
+    }
+  }
+
+  // Confirmed furniture events elevate activityKey over walking/playing.
+  for (const furniture of ["on_sofa", "on_table", "on_chair"]) {
+    for (const lower of ["walking", "playing"]) {
+      const item = sample(1, 0, lower, lower);
+      item.events = [{type: furniture, pet: "dog"}];
+      assert.equal(activityKey(item, "dog"), furniture);
+      assert.equal(activityKey(item, "cat"), lower);
+    }
+  }
+
+  // Candidate tie-breaking prefers furniture over walking/playing.
+  const tied = sample(2, 10, "uncertain");
+  tied.pets.dog.probabilities = {uncertain: .7, walking: .15, playing: .15, on_sofa: .15};
+  assert.equal(activityCandidate(tied.pets.dog), "on_sofa");
+  assert.equal(activityKey(tied, "dog"), "suspect:on_sofa");
+});

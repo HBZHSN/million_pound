@@ -22,7 +22,7 @@
 </defs></svg>
 <header class="topbar">
   <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">M</span><span>Million Pound<small>百万与英镑的家庭守护</small></span></a>
-  <nav aria-label="主导航"><a href="/activities" aria-current="page">活动时间线</a><a href="/settings#events">事件</a><a href="/settings#settings">设置</a><button id="logout" class="quiet">退出</button></nav>
+  <nav aria-label="主导航"><a href="/activities" aria-current="page">活动时间线</a><a href="/settings#events" data-admin-only hidden>事件</a><a href="/settings#settings" data-admin-only hidden>设置</a><button id="logout" class="quiet">退出</button></nav>
 </header>
 <main class="diary-shell">
   <section class="diary-intro">
@@ -61,7 +61,11 @@
     <label class="photo-scrubber"><span class="visually-hidden">选择这段活动的画面</span><input id="photo-position" type="range" min="0" step="1" aria-label="选择这段活动的画面"></label>
     <p id="detail-caption" class="detail-caption"></p><p id="detail-confidence" class="detail-confidence"></p><p id="detail-identity" class="detail-confidence" hidden></p>
     <p id="detail-message" class="notice" hidden></p><p id="detail-count" class="footnote"></p>
-    <div class="media-tools"><button id="delete-current-media" type="button" class="danger">删除本段图片/视频</button></div>
+    <div class="media-tools"><button id="share-current-video" type="button" class="secondary">分享视频</button><button id="delete-current-media" type="button" class="danger" data-admin-only hidden>删除本段图片/视频</button></div>
+    <div id="share-result" class="share-box" hidden>
+      <p class="share-hint">链接 7 日内无需密码即可观看（有效至 <span id="share-expires"></span>）：</p>
+      <div class="share-row"><input id="share-url" type="text" readonly aria-label="分享链接"><button id="copy-share-url" type="button" class="secondary">复制链接</button></div>
+    </div>
     <p class="notice media-message" role="status" aria-live="polite" hidden></p>
   </div>
 </dialog>

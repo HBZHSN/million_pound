@@ -5,7 +5,6 @@
   <main class="login-card">
     <div class="brand-mark" aria-hidden="true">M</div><p class="eyebrow">MILLION POUND</p>
     <h1>家里的小事，<br>都值得被看见。</h1><p class="muted">百万与英镑的家庭守护站</p>
-    <form id="login-form"><label for="password">登录密码</label><input id="password" type="password" autocomplete="current-password" maxlength="256" required autofocus><button type="submit" class="primary">进入守护站</button><p id="message" role="alert"></p></form>
-    <p class="footnote">请使用初始化时生成的密码登录。</p>
+    <form id="login-form"><input type="text" name="username" autocomplete="username" value="million-pound" class="visually-hidden" tabindex="-1" aria-hidden="true" readonly><label for="password">登录密码</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required autofocus><label class="media-check login-remember"><input id="remember" name="remember" type="checkbox" checked>记住登录状态</label><button type="submit" class="primary">进入守护站</button><p id="message" role="alert"></p></form>
   </main>
 </body></html>

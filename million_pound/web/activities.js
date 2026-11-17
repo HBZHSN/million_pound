@@ -1,5 +1,5 @@
 "use strict";
-import {$, action, api, deleteMedia, formatTime, initSession, notice, petNames} from "/assets/client.js";
+import {$, action, api, copyText, deleteMedia, formatTime, initSession, notice, petNames} from "/assets/client.js";
 import {PETS, activityCandidate, activityKey, durationLabel, groupActivities, timelineLayout, timelinePhotos} from "/assets/timeline.js";
 
 const statuses = {pending: "正在判断", error: "判断失败", skipped: "积压未判断", cancelled: "已中断"};
@@ -9,7 +9,7 @@ const today = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10
 const records = new Map();
 const compactTimeline = window.matchMedia("(max-width:760px)");
 let before = null, generation = 0, filter = "", labels = {}, episodesById = new Map(), clustersById = new Map(), photosById = new Map(), detail = null, photoIndex = 0, photoTrigger = null, loadingOlder = false;
-let deletingMedia = false;
+let deletingMedia = false, isAdmin = false;
 $("#day").value = today();
 
 function labelFor(key) {
@@ -114,11 +114,18 @@ async function loadActivities(older = false) {
   if (changed || missed) records.clear();
   if (changed || missed || older || !records.size) before = result.next_before;
   filter = nextFilter; labels = result.labels;
+  updateCaptureStatus(result.capture_status);
   for (const item of result.items) records.set(item.id, item);
   if (!$("#activity-details").open && !$("#interval-activities").matches(":popover-open")) {
     renderTimeline();
     autoLoadOlder();
   }
+}
+
+function resetShareBox() {
+  $("#share-url").value = "";
+  $("#share-expires").textContent = "";
+  $("#share-result").hidden = true;
 }
 
 function stopVideo() {
@@ -128,6 +135,7 @@ function stopVideo() {
 
 function showPhoto(imageIndex = 0) {
   stopVideo();
+  resetShareBox();
   const item = detail.records[photoIndex];
   const pet = detail.pet;
   const image = $("#detail-image"), link = $("#detail-original"), video = $("#detail-video");
@@ -149,6 +157,7 @@ function showPhoto(imageIndex = 0) {
   $("#photo-position").disabled = detail.records.length === 1;
   const when = Date.parse(item.started_at) + (item.frame_offsets[imageIndex] || 0) * 1000;
   $("#detail-caption").textContent = "采集约 " + formatTime(when) + (item.video ? " · 加速录像，可暂停或拖动进度核对动作" : hasImage ? " · 本段未保存录像，可点击图片查看原图" : " · 媒体已删除或过期");
+  $("#share-current-video").disabled = deletingMedia || !item.video;
   $("#delete-current-media").disabled = deletingMedia || (!hasImage && !item.video);
   $("#photo-position").setAttribute("aria-valuetext", "第 " + (photoIndex + 1) + " 张画面，采集约 " + formatTime(when));
   const decision = item.pets[pet];
@@ -205,12 +214,12 @@ async function removeActivityMedia(ids) {
   } finally { deletingMedia = false; }
 }
 
-async function loadStatus() {
-  const status = await api("/api/status");
+function updateCaptureStatus(status) {
+  if (!status) return;
   const element = $("#capture-status");
   element.classList.toggle("is-live", status.recording);
   element.textContent = status.recording ? "正在记录日常" : status.enabled ? "等待下一段日常" : "记录已暂停";
-  if (status.last_error) element.textContent = "记录遇到问题，请到首页查看";
+  if (status.has_error) element.textContent = isAdmin ? "记录遇到问题，请到设置页查看" : "记录遇到问题";
 }
 
 async function loadOlder() {
@@ -281,6 +290,7 @@ $("#activity-details").addEventListener("click", event => { if (event.target ===
 $("#detail-video").addEventListener("error", () => {
   if (!$("#detail-video").error) return;
   stopVideo();
+  $("#share-current-video").disabled = true;
   const image = $("#detail-image"), hasImage = image.hasAttribute("src") && (!image.complete || image.naturalWidth > 0);
   $("#detail-original").hidden = !hasImage; $("#detail-missing").hidden = hasImage;
   $("#detail-caption").textContent = "录像已过期或暂时不可用，显示静态截图。";
@@ -291,9 +301,29 @@ $("#detail-image").addEventListener("error", () => {
 $("#previous-photo").addEventListener("click", () => { photoIndex--; showPhoto(); });
 $("#next-photo").addEventListener("click", () => { photoIndex++; showPhoto(); });
 $("#photo-position").addEventListener("change", event => { photoIndex = Number(event.target.value); showPhoto(); });
+$("#share-current-video").addEventListener("click", event => {
+  action(event.currentTarget, async () => {
+    const item = detail?.records[photoIndex];
+    if (!item?.video) return;
+    const result = await api("/api/activities/" + item.id + "/share", "POST", {pet: detail.pet || ""});
+    $("#share-url").value = result.url;
+    $("#share-expires").textContent = formatTime(result.expires_at);
+    $("#share-result").hidden = false;
+    const copied = await copyText(result.url, $("#share-url"));
+    notice(copied ? "已生成并复制 7 天有效的分享链接，无需密码即可观看。" : "已生成 7 天有效的分享链接，请复制下方链接。");
+  });
+});
+$("#copy-share-url").addEventListener("click", async () => {
+  const url = $("#share-url").value;
+  if (!url) return;
+  const copied = await copyText(url, $("#share-url"));
+  notice(copied ? "分享链接已复制。" : "请手动复制上方链接。", !copied);
+});
 $("#delete-current-media").addEventListener("click", event => {
   action(event.currentTarget, () => removeActivityMedia([detail.records[photoIndex].id])).then(() => {
-    const item = detail.records[photoIndex]; $("#delete-current-media").disabled = !item.images.length && !item.video;
+    const item = detail.records[photoIndex];
+    $("#share-current-video").disabled = !item.video;
+    $("#delete-current-media").disabled = !item.images.length && !item.video;
   });
 });
 $("#timeline-scale").addEventListener("change", () => { renderTimeline(); autoLoadOlder(); });
@@ -308,13 +338,15 @@ olderButton.addEventListener("click", event => action(event.target, loadOlder));
 $("#logout").addEventListener("click", event => action(event.target, async () => { await api("/api/logout", "POST"); window.location.assign("/login"); }));
 (async () => {
   try {
-    await initSession();
+    const session = await initSession();
+    isAdmin = session.role === "admin";
+    for (const element of document.querySelectorAll("[data-admin-only]")) element.hidden = !isAdmin;
     let refreshing = false;
     const refresh = async () => {
       if (document.hidden || refreshing) return;
       refreshing = true;
       try {
-        await Promise.all([loadStatus(), loadingOlder ? Promise.resolve() : loadActivities()]);
+        await (loadingOlder ? Promise.resolve() : loadActivities());
         if ($("#day").value && !$("#activity-details").open) notice("");
       }
       catch (error) { notice(error.message, true); }

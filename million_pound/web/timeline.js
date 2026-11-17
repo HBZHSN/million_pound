@@ -1,21 +1,35 @@
 export const PETS = {dog: "百万", cat: "英镑"};
 const SUSPECT_PREFIX = "suspect:";
-const PHOTO_PRIORITY = {
-  toileting: 0, destruction: 1, eating: 2,
-  on_table: 3, on_sofa: 4, on_chair: 5,
-  playing: 6, walking: 7, grooming: 8, sleeping: 9,
+const ACTIVITY_PRIORITY = {
+  toileting: 0,
+  destruction: 1,
+  eating: 2,
+  on_table: 3,
+  on_sofa: 4,
+  on_chair: 5,
+  playing: 6,
+  walking: 7,
+  grooming: 8,
+  sleeping: 9,
 };
-const DEFAULT_PHOTO_PRIORITY = 10;
+const DEFAULT_PRIORITY = 10;
 const CANDIDATES = new Set([
   "sleeping", "resting", "eating", "drinking", "walking", "playing",
   "grooming", "on_sofa", "on_table", "on_chair", "other",
 ]);
 const normalizeActivity = activity => activity === "resting" ? "sleeping" : activity === "drinking" ? "eating" : activity;
 
+export function activityRank(key) {
+  if (typeof key !== "string") return (DEFAULT_PRIORITY + 1) * 2;
+  const suspected = key.startsWith(SUSPECT_PREFIX);
+  const base = suspected ? key.slice(SUSPECT_PREFIX.length) : key;
+  return (ACTIVITY_PRIORITY[base] ?? DEFAULT_PRIORITY) * 2 + Number(suspected);
+}
+
 export function activityCandidate(decision) {
   const candidates = Object.entries(decision?.probabilities || {}).filter(([activity, score]) =>
     CANDIDATES.has(activity) && Number.isFinite(score) && score >= 0 && score <= 1);
-  return candidates.sort((a, b) => b[1] - a[1])[0]?.[0] ||
+  return candidates.sort((a, b) => b[1] - a[1] || activityRank(normalizeActivity(a[0])) - activityRank(normalizeActivity(b[0])))[0]?.[0] ||
     (CANDIDATES.has(decision?.proposed_activity) ? decision.proposed_activity : null);
 }
 
@@ -24,13 +38,19 @@ export function activityKey(item, pet) {
   if (item.status !== "done") return null;
   const decision = item.pets[pet];
   if (decision?.visibility !== "present" || decision.activity === "not_visible" || decision.proposed_activity === "not_visible") return null;
+  let key = null;
   const activity = decision.activity;
-  if (CANDIDATES.has(activity)) return normalizeActivity(activity);
-  if (activity === "uncertain") {
+  if (CANDIDATES.has(activity)) key = normalizeActivity(activity);
+  else if (activity === "uncertain") {
     const candidate = activityCandidate(decision);
-    return candidate ? SUSPECT_PREFIX + normalizeActivity(candidate) : null;
+    if (candidate) key = SUSPECT_PREFIX + normalizeActivity(candidate);
   }
-  return null;
+  for (const event of item.events || []) {
+    if ((event.pet !== pet && event.pet !== "both") || !CANDIDATES.has(event.type)) continue;
+    const normalized = normalizeActivity(event.type);
+    if (key === null || activityRank(normalized) < activityRank(key)) key = normalized;
+  }
+  return key;
 }
 
 export function groupActivities(items) {
@@ -82,11 +102,11 @@ export function timelinePhotos(items, ticks) {
       for (const pet of Object.keys(PETS)) {
         const decision = item.pets[pet];
         if (decision?.visibility !== "present" || decision.activity === "not_visible" || decision.proposed_activity === "not_visible") continue;
-        let key = activityKey(item, pet), priority = PHOTO_PRIORITY[key?.replace(SUSPECT_PREFIX, "")] ?? DEFAULT_PHOTO_PRIORITY;
+        let key = activityKey(item, pet), priority = activityRank(key);
         for (const event of item.events || []) {
           if (event.pet !== pet && event.pet !== "both") continue;
-          const rank = PHOTO_PRIORITY[event.type] ?? DEFAULT_PHOTO_PRIORITY;
-          if (rank < priority || rank === priority && key?.startsWith(SUSPECT_PREFIX)) { key = event.type; priority = rank; }
+          const rank = activityRank(event.type);
+          if (rank < priority) { key = event.type; priority = rank; }
         }
         const id = pet + "-" + bucket, previous = photos.get(id);
         if (!previous || priority < previous.priority || priority === previous.priority && (time > previous.time || time === previous.time && item.id > previous.item.id)) {
@@ -125,7 +145,12 @@ export function timelineLayout(episodes, start, end, compact = false, step = 15 
     group.intervals.sort((a, b) => a.top + a.height / 2 - b.top - b.height / 2);
     const capacity = compact ? 2 : 3;
     const crowded = group.intervals.length > capacity;
-    const shown = crowded ? group.intervals.slice(0, capacity - 1) : group.intervals;
+    const shown = crowded
+      ? [...group.intervals]
+          .sort((a, b) => activityRank(a.episode.key) - activityRank(b.episode.key) || (a.top + a.height / 2) - (b.top + b.height / 2))
+          .slice(0, capacity - 1)
+          .sort((a, b) => (a.top + a.height / 2) - (b.top + b.height / 2))
+      : group.intervals;
     const count = shown.length + Number(crowded);
     const first = position(group.end) + (compact ? 70 : 18), last = position(group.start) - 18;
     let cursor = first;

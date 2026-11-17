@@ -35,15 +35,28 @@
       <fieldset class="card"><legend>消息与访问</legend><div class="fields"><label>Bark 推送地址<input name="bark_url" type="password" autocomplete="new-password" maxlength="4096" placeholder="https://api.day.app/设备密钥"></label><label>公网访问地址<input name="public_url" type="url" placeholder="https://pets.example.com"></label></div><p class="footnote">Bark 地址留空保留已有值。公网地址接通后填写，通知才会附带可访问的截图链接；链接一小时内有效。</p><button id="test-bark" type="button" class="secondary">发送测试通知</button></fieldset>
     </div><div class="savebar"><p class="muted">保存后立即应用，正在处理的采样会中止。</p><button id="save" class="primary" type="submit">保存设置</button></div>
   </form>
-  <form id="password-form" class="section" aria-label="修改登录密码">
-    <fieldset class="card"><legend>修改登录密码</legend><div class="fields">
+  <form id="password-form" class="section" aria-label="修改管理员密码">
+    <fieldset class="card"><legend>修改管理员密码</legend><div class="fields">
       <label>当前密码<input name="current_password" type="password" autocomplete="current-password" maxlength="256" required></label>
       <label>新密码<input name="new_password" type="password" autocomplete="new-password" minlength="11" maxlength="256" required></label>
       <label>确认新密码<input name="confirm_password" type="password" autocomplete="new-password" minlength="11" maxlength="256" required></label>
     </div><p class="footnote">密码至少 11 个字符，修改后请用新密码重新登录。</p><div class="savebar"><p id="password-message" class="error-text" role="alert"></p><button id="change-password" class="primary" type="submit">修改密码</button></div></fieldset>
-  </form></section>
+  </form>
+  <section id="viewer-passwords" class="section" aria-label="浏览密码">
+    <div class="card">
+      <form id="viewer-password-form">
+        <fieldset class="viewer-fieldset"><legend>浏览密码（只读时间线）</legend><div class="fields">
+          <label>备注名称（选填）<input name="label" type="text" maxlength="64" placeholder="例如：家人手机、客厅平板"></label>
+          <label>浏览密码<input name="password" type="password" autocomplete="new-password" minlength="6" maxlength="256" required placeholder="至少 6 个字符"></label>
+          <label>确认浏览密码<input name="confirm_password" type="password" autocomplete="new-password" minlength="6" maxlength="256" required></label>
+        </div><p class="footnote">可添加多个浏览密码。使用浏览密码在登录页输入后，仅可查看活动时间线和分享时间线视频，无法查看预警事件、修改设置或删除媒体。已保存的密码仅记录加密摘要，不显示明文。</p><div class="savebar"><p id="viewer-password-message" class="error-text" role="alert"></p><button id="add-viewer-password" class="primary" type="submit">添加浏览密码</button></div></fieldset>
+      </form>
+      <ul id="viewer-password-list" class="viewer-password-list"><li class="muted">正在读取浏览密码…</li></ul>
+    </div>
+  </section></section>
   <footer>Million Pound · 连续采集，分段判断。抽帧可能遗漏短暂行为，请结合截图判断。</footer>
 </main>
 <template id="window-template"><div class="window-row"><label>开始<input type="time" class="window-start" required></label><span aria-hidden="true">—</span><label>结束<input type="time" class="window-end" required></label><button type="button" class="quiet remove-window" aria-label="删除该监控时段">删除</button></div></template>
+<template id="viewer-password-template"><li class="viewer-password-item"><div><strong class="viewer-label"></strong><small class="viewer-created muted"></small></div><button type="button" class="danger delete-viewer-password">删除</button></li></template>
 <template id="event-template"><article class="card event"><div class="event-header"><h3></h3><span class="badge"></span></div><time></time><p class="description"></p><p class="event-meta muted"></p><div class="event-images"></div><div class="media-tools"><label class="media-check"><input type="checkbox" class="event-select">选择此事件媒体</label><button type="button" class="danger delete-event-media">删除图片/视频</button></div></article></template>
 </body></html>
